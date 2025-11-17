@@ -15,17 +15,17 @@ CONFIG = {
     
     # Serial port settings
     # Dry air mass flow controller
-    'dry_mfc_port': '/dev/ttyS3',  # Change to your port (e.g., 'COM3' on Windows)
+    'dry_mfc_port': 'COM6',  # Change to your port (e.g., 'COM3' on Windows)
     'dry_mfc_address': 1,
     
     # Wet air mass flow controller
-    'wet_mfc_port': '/dev/ttyS4',  # Change to your port (e.g., 'COM4' on Windows)
-    'wet_mfc_address': 2,
+    'wet_mfc_port': 'COM7',  # Change to your port (e.g., 'COM4' on Windows)
+    'wet_mfc_address': 247,
     
     # DewMaster hygrometer
-    'hygrometer_port': '/dev/ttyS5',  # Change to your port (e.g., 'COM5' on Windows)
+    'hygrometer_port': 'COM3',  # Change to your port (e.g., 'COM5' on Windows)
     
     # Communication settings
     'mfc_baudrate': 9600,
-    'hygrometer_baudrate': 19200,
+    'hygrometer_baudrate': 9600,
 }

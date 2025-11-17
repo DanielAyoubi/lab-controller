@@ -101,9 +101,17 @@ class VogtlinMFC:
         """Writes new gas flow setpoint."""
         self._write_float(self.REG["setpoint"], value)
         print(f"Setpoint updated to {value:.3f}")
+    
+    def set_flow(self, value: float) -> bool:
+        """Alias for set_flow_setpoint for compatibility. Returns True on success."""
+        try:
+            self.set_flow_setpoint(value)
+            return True
+        except Exception as e:
+            print(f"Error setting flow on {self.name}: {e}")
+            return False
 
     def get_status(self) -> dict:
-        """Convenient snapshot of key values."""
         return {
             "flow": self.get_flow(),
             "setpoint": self.get_setpoint(),

@@ -135,10 +135,10 @@ N-SIM-Microscope/
 
 Log files are saved in CSV format with the following columns:
 - `timestamp`: ISO format timestamp
-- `dry_flow`: Dry air actual flow rate (ml/min)
-- `dry_setpoint`: Dry air setpoint (ml/min)
-- `wet_flow`: Wet air actual flow rate (ml/min)
-- `wet_setpoint`: Wet air setpoint (ml/min)
+- `dry_flow`: Dry air actual flow rate (L/min)
+- `dry_setpoint`: Dry air setpoint (L/min)
+- `wet_flow`: Wet air actual flow rate (L/min)
+- `wet_setpoint`: Wet air setpoint (L/min)
 - `ambient_temp`: Ambient temperature (°C)
 - `dewpoint_temp`: Dewpoint temperature (°C)
 - `relative_humidity`: Relative humidity (%)
@@ -164,13 +164,6 @@ If devices fail to connect:
 3. Verify baud rates match device settings (default: 9600)
 4. Ensure no other software is using the serial ports
 
-### Testing Without Hardware
-
-To test the system without physical devices:
-1. Run the demo: `python demo.py`
-2. Explore the examples: `python examples.py`
-3. Run unit tests: `python tests/test_system.py`
-
 ## Device Communication Protocols
 
 ### Vögtlin MFC
@@ -184,15 +177,3 @@ To test the system without physical devices:
 - Returns comma-separated values for readings
 
 **Note:** Communication protocols may vary by model. Adjust the device interface files if needed for your specific hardware.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit issues or pull requests.
-
-## License
-
-This project is provided as-is for research and educational purposes.
-
-## Acknowledgments
-
-Developed for environmental control monitoring of Nikon SIM microscope setups.
