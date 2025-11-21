@@ -7,6 +7,7 @@ class VogtlinMFC:
     """
     Wrapper class for Vögtlin Mass Flow Controllers using Modbus RTU via RS-485.
     """
+
     # Register map (base addresses) https://www.voegtlin.com/data/329-3042_en_manualsmart_digicom.pdf
     REG = {
         "flow": 0x0000,
@@ -21,7 +22,9 @@ class VogtlinMFC:
         "ramp": 0x000F,
     }
 
-    def __init__(self, port: str, address: int, baudrate: int = 9600, name: str = "MFC"):
+    def __init__(
+        self, port: str, address: int, baudrate: int = 9600, name: str = "MFC"
+    ):
         self.port = port
         self.baudrate = baudrate
         self.address = address
@@ -37,7 +40,9 @@ class VogtlinMFC:
 
     def connect(self) -> bool:
         try:
-            self.instrument = minimalmodbus.Instrument(self.port, self.address, mode=minimalmodbus.MODE_RTU)
+            self.instrument = minimalmodbus.Instrument(
+                self.port, self.address, mode=minimalmodbus.MODE_RTU
+            )
             self.instrument.serial.baudrate = self.baudrate
             self.instrument.serial.bytesize = 8
             self.instrument.serial.parity = minimalmodbus.serial.PARITY_NONE
@@ -52,6 +57,7 @@ class VogtlinMFC:
 
     def disconnect(self):
         if self.instrument and self.instrument.serial.is_open:
+            self.instrument.set_flow(0.0)
             self.instrument.serial.close()
             print(f"Disconnected {self.name}.")
 
@@ -63,13 +69,13 @@ class VogtlinMFC:
         regs = self.instrument.read_registers(address, 2)
         if swap:
             regs = regs[::-1]
-        raw_bytes = struct.pack('>HH', *regs)
-        return struct.unpack('>f', raw_bytes)[0]
+        raw_bytes = struct.pack(">HH", *regs)
+        return struct.unpack(">f", raw_bytes)[0]
 
     def _write_float(self, address: int, value: float, swap: bool = False):
         """Writes a float into 2 consecutive Modbus registers."""
-        raw_bytes = struct.pack('>f', value)
-        regs = list(struct.unpack('>HH', raw_bytes))
+        raw_bytes = struct.pack(">f", value)
+        regs = list(struct.unpack(">HH", raw_bytes))
         if swap:
             regs = regs[::-1]
         self.instrument.write_registers(address, regs)
@@ -101,7 +107,7 @@ class VogtlinMFC:
         """Writes new gas flow setpoint."""
         self._write_float(self.REG["setpoint"], value)
         print(f"Setpoint updated to {value:.3f}")
-    
+
     def set_flow(self, value: float) -> bool:
         """Alias for set_flow_setpoint for compatibility. Returns True on success."""
         try:
