@@ -48,7 +48,7 @@ class Controller:
         success = True
         
         # Connect dry air MFC
-        if 'dry_mfc_port' in self.config:
+        if self.config.get('dry_mfc_enabled', True) and 'dry_mfc_port' in self.config:
             print(f"Connecting to Dry Air MFC on {self.config['dry_mfc_port']}...")
             self.dry_mfc = VogtlinMFC(
                 port=self.config['dry_mfc_port'],
@@ -62,7 +62,7 @@ class Controller:
                 print("Dry Air MFC connected successfully")
         
         # Connect wet air MFC
-        if 'wet_mfc_port' in self.config:
+        if self.config.get('wet_mfc_enabled', True) and 'wet_mfc_port' in self.config:
             print(f"Connecting to Wet Air MFC on {self.config['wet_mfc_port']}...")
             self.wet_mfc = VogtlinMFC(
                 port=self.config['wet_mfc_port'],
@@ -76,7 +76,7 @@ class Controller:
                 print("Wet Air MFC connected successfully")
         
         # Connect hygrometer
-        if 'hygrometer_port' in self.config:
+        if self.config.get('hygrometer_enabled', True) and 'hygrometer_port' in self.config:
             print(f"Connecting to DewMaster Hygrometer on {self.config['hygrometer_port']}...")
             self.hygrometer = DewMaster(
                 port=self.config['hygrometer_port'],
@@ -88,11 +88,13 @@ class Controller:
             else:
                 print("DewMaster Hygrometer connected successfully")
 
-        if 't_probe' in self.config:
-            print(f"Connecting to Temperature Probe on {self.config['t_probe_port']}...")
+        if self.config.get('t_probe_enabled'):
+            vendor_id = self.config.get('t_probe_vendor_id', Thermocouple.DEFAULT_VENDOR_ID)
+            product_id = self.config.get('t_probe_product_id', Thermocouple.DEFAULT_PRODUCT_ID)
+            print(f"Connecting to Temperature Probe (USB) [VID=0x{vendor_id:04X}, PID=0x{product_id:04X}]...")
             self.t_probe = Thermocouple(
-                port=self.config['t_probe_port'],
-                baudrate=self.config.get('t_probe_baudrate', 9600)
+                vendor_id=vendor_id,
+                product_id=product_id,
             )
             if not self.t_probe.connect():
                 print("Failed to connect to Temperature Probe")
@@ -148,6 +150,7 @@ class Controller:
                 data['dewpoint_temp'] = readings.get('dewpoint_temp')
                 data['relative_humidity'] = readings.get('relative_humidity')
 
+        # Read thermocouple
         if self.t_probe:
             data['cell_temp'] = self.t_probe.get_temperature()
         
@@ -155,14 +158,6 @@ class Controller:
     
     def set_flow_rates(self, dry_flow: Optional[float] = None, wet_flow: Optional[float] = None, 
                        max_flow: Optional[float] = None, timeout: int = 10):
-        """
-        Set flow rates for dry and/or wet MFCs.
-        
-        Args:
-            dry_flow: Dry air flow rate in L/min
-            wet_flow: Wet air flow rate in L/min
-            max_flow: Maximum allowed total flow rate in L/min (for validation)
-        """
         # Validate total flow doesn't exceed maximum
         if max_flow is not None:
             total = (dry_flow or 0) + (wet_flow or 0)
@@ -185,12 +180,6 @@ class Controller:
             time.sleep(timeout) # Let flow equilibrate
     
     def start_monitoring(self, interval: float = 5.0):
-        """
-        Start continuous monitoring and logging.
-        
-        Args:
-            interval: Sampling interval in seconds
-        """
         print(f"\nStarting monitoring with {interval}s interval...")
         print("Press Ctrl+C to stop\n")
         
@@ -205,9 +194,10 @@ class Controller:
         
         try:
             while self.running:
-                # Read all sensors
                 data = self.read_all_sensors()
                 
+                self.warn_if_temp_delta(data)
+
                 # Log data
                 self.logger.log_data(data)
                 
@@ -254,9 +244,6 @@ class Controller:
         Args:
             target_rh: Target relative humidity (0-100)
             total_flow: Total flow rate in L/min
-            
-        Returns:
-            Tuple of (dry_flow, wet_flow) in L/min
         """
         # Clamp target RH to valid range
         target_rh = max(0.0, min(100.0, target_rh))
@@ -281,9 +268,6 @@ class Controller:
             current_wet_flow: Current wet air flow rate in L/min
             max_flow: Maximum/target total flow rate in L/min
             adjustment_factor: Proportional adjustment factor (0-1)
-            
-        Returns:
-            Tuple of (new_dry_flow, new_wet_flow) in L/min
         """
         error = target_rh - actual_rh
         adjustment_factor = adjustment_factor * (1 + (abs(error) / 100.0)) # adjust based on size of error
@@ -399,6 +383,8 @@ class Controller:
                     
                     # Read sensors
                     data = self.read_all_sensors()
+
+                    self.warn_if_temp_delta(data)
                     
                     # Log data
                     self.logger.log_data(data)
@@ -478,3 +464,12 @@ class Controller:
     def stop(self):
         self.running = False
         self.disconnect_devices()
+
+    def warn_if_temp_delta(self, data: Dict[str, Optional[float]]):
+        cell_temp = data.get('cell_temp')
+        ambient_temp = data.get('ambient_temp')
+        if cell_temp is None or ambient_temp is None:
+            return
+        delta = abs(cell_temp - ambient_temp)
+        if delta > 5:
+            print(f"  ⚠ Warning: Cell vs Ambient temperature differs by {delta:.2f} °C")

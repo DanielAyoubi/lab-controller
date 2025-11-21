@@ -44,8 +44,7 @@ def main():
             return
 
     # Check if running automated experiment
-    if args.experiment:
-        # Run automated experiment
+    if args.experiment: # Ramp experiment changing humidity over predetermined range
         try:
             controller.run_automated_experiment(
                 direction=args.direction,
