@@ -4,10 +4,6 @@ import time
 
 
 class VogtlinMFC:
-    """
-    Wrapper class for Vögtlin Mass Flow Controllers using Modbus RTU via RS-485.
-    """
-
     # Register map (base addresses) https://www.voegtlin.com/data/329-3042_en_manualsmart_digicom.pdf
     REG = {
         "flow": 0x0000,
@@ -57,7 +53,7 @@ class VogtlinMFC:
 
     def disconnect(self):
         if self.instrument and self.instrument.serial.is_open:
-            self.instrument.set_flow(0.0)
+            self.set_flow(0.0)
             self.instrument.serial.close()
             print(f"Disconnected {self.name}.")
 

@@ -33,15 +33,20 @@ class Controller:
             update_interval=config.get('plot_update_interval', 1000)
         )
         
-        # Data fields for logging
+        # Data fields for logging - collect all possible data
         self.log_fields = [
             'timestamp',
             'dry_flow',
-            'wet_flow',
+            'wet_flow', 
+            'dry_flow_setpoint',
+            'wet_flow_setpoint',
             'cell_temp',
             'ambient_temp',
             'dewpoint_temp',
-            'relative_humidity'
+            'relative_humidity_device',      # RH reading directly from DewMaster
+            'relative_humidity_calculated',  # RH calculated from dewpoint + ambient temp
+            'relative_humidity_cell_calc',   # RH calculated from dewpoint + cell temp
+            'relative_humidity_control'      # The RH value actually used for control
         ]
         
     def connect_devices(self) -> bool:
@@ -101,6 +106,9 @@ class Controller:
                 success = False
             else:
                 print("Temperature Probe connected successfully")
+
+        # if self.config.get('chiller_enabled', True) and 'chiller_port' in self.config:
+        #     pass
         
         return success
     
@@ -128,19 +136,26 @@ class Controller:
             'timestamp': datetime.now().isoformat(),
             'dry_flow': None,
             'wet_flow': None,
+            'dry_flow_setpoint': None,
+            'wet_flow_setpoint': None,
             'cell_temp': None,
             'ambient_temp': None,
             'dewpoint_temp': None,
-            'relative_humidity': None
+            'relative_humidity_device': None,
+            'relative_humidity_calculated': None,
+            'relative_humidity_cell_calc': None,
+            'relative_humidity_control': None
         }
         
         # Read dry MFC
         if self.dry_mfc:
             data['dry_flow'] = self.dry_mfc.get_flow()
+            data['dry_flow_setpoint'] = self.dry_mfc.get_setpoint()
         
         # Read wet MFC
         if self.wet_mfc:
             data['wet_flow'] = self.wet_mfc.get_flow()
+            data['wet_flow_setpoint'] = self.wet_mfc.get_setpoint()
         
         # Read hygrometer
         if self.hygrometer:
@@ -148,16 +163,45 @@ class Controller:
             if readings:
                 data['ambient_temp'] = readings.get('ambient_temp')
                 data['dewpoint_temp'] = readings.get('dewpoint_temp')
-                data['relative_humidity'] = readings.get('relative_humidity')
+                data['relative_humidity_device'] = readings.get('relative_humidity_device')
+                data['relative_humidity_calculated'] = readings.get('relative_humidity_calculated')
 
         # Read thermocouple
         if self.t_probe:
             data['cell_temp'] = self.t_probe.get_temperature()
+
+        # Calculate RH using cell temperature instead of ambient (if available)
+        if (
+            self.hygrometer and
+            data['dewpoint_temp'] is not None and
+            data['cell_temp'] is not None
+        ):
+            data['relative_humidity_cell_calc'] = self.hygrometer.compute_relative_humidity(
+                data['dewpoint_temp'], data['cell_temp']
+            )
+        
+        # Determine which RH value to use for control based on configuration
+        rh_source = self.config.get('rh_control_source', 'cell_calc')  # Default to calculated from cell temp
+        
+        if rh_source == 'dewmaster' and data['relative_humidity_device'] is not None:
+            data['relative_humidity_control'] = data['relative_humidity_device']
+        elif rh_source == 'calculated' and data['relative_humidity_calculated'] is not None:
+            data['relative_humidity_control'] = data['relative_humidity_calculated']
+        elif rh_source == 'cell_calc' and data['relative_humidity_cell_calc'] is not None:
+            data['relative_humidity_control'] = data['relative_humidity_cell_calc']
+        else:
+            # Fallback hierarchy: cell_calc -> calculated -> device
+            if data['relative_humidity_cell_calc'] is not None:
+                data['relative_humidity_control'] = data['relative_humidity_cell_calc']
+            elif data['relative_humidity_calculated'] is not None:
+                data['relative_humidity_control'] = data['relative_humidity_calculated']
+            elif data['relative_humidity_device'] is not None:
+                data['relative_humidity_control'] = data['relative_humidity_device']
         
         return data
     
     def set_flow_rates(self, dry_flow: Optional[float] = None, wet_flow: Optional[float] = None, 
-                       max_flow: Optional[float] = None, timeout: int = 10):
+                       max_flow: Optional[float] = None, timeout: int = 30):
         # Validate total flow doesn't exceed maximum
         if max_flow is not None:
             total = (dry_flow or 0) + (wet_flow or 0)
@@ -177,6 +221,7 @@ class Controller:
                 print("Failed to set wet air flow")
 
         if wet_flow is not None and dry_flow is not None:
+            print("Letting flow equilibrate...")
             time.sleep(timeout) # Let flow equilibrate
     
     def start_monitoring(self, interval: float = 5.0):
@@ -196,8 +241,6 @@ class Controller:
             while self.running:
                 data = self.read_all_sensors()
                 
-                self.warn_if_temp_delta(data)
-
                 # Log data
                 self.logger.log_data(data)
                 
@@ -206,22 +249,57 @@ class Controller:
                 
                 # Display current readings
                 print(f"[{data['timestamp']}]")
-                dry_sp = self.dry_mfc.get_setpoint() if self.dry_mfc else None
-                wet_sp = self.wet_mfc.get_setpoint() if self.wet_mfc else None
-                if dry_sp is not None:
-                    print(f"  Dry Air:  {data['dry_flow']:.3f} L/min (SP: {dry_sp:.3f})")
-                else:
-                    print(f"  Dry Air:  {data['dry_flow']:.3f} L/min")
-                if wet_sp is not None:
-                    print(f"  Wet Air:  {data['wet_flow']:.3f} L/min (SP: {wet_sp:.3f})")
-                else:
-                    print(f"  Wet Air:  {data['wet_flow']:.3f} L/min")
+                
+                # Flow rates with setpoints
+                if data['dry_flow'] is not None:
+                    if data['dry_flow_setpoint'] is not None:
+                        print(f"  Dry Air:  {data['dry_flow']:.3f} L/min (SP: {data['dry_flow_setpoint']:.3f})")
+                    else:
+                        print(f"  Dry Air:  {data['dry_flow']:.3f} L/min")
+                        
+                if data['wet_flow'] is not None:
+                    if data['wet_flow_setpoint'] is not None:
+                        print(f"  Wet Air:  {data['wet_flow']:.3f} L/min (SP: {data['wet_flow_setpoint']:.3f})")
+                    else:
+                        print(f"  Wet Air:  {data['wet_flow']:.3f} L/min")
+                
+                # Total flow
+                total_flow = 0
+                if data['dry_flow'] is not None:
+                    total_flow += data['dry_flow']
+                if data['wet_flow'] is not None:
+                    total_flow += data['wet_flow']
+                if total_flow > 0:
+                    print(f"  Total:    {total_flow:.3f} L/min")
+                
+                # Temperatures
+                temps = []
+                if data['cell_temp'] is not None:
+                    temps.append(f"Cell: {data['cell_temp']:.2f}°C")
                 if data['ambient_temp'] is not None:
-                    print(f"  Ambient:  {data['ambient_temp']:.2f} °C")
+                    temps.append(f"Ambient: {data['ambient_temp']:.2f}°C")
                 if data['dewpoint_temp'] is not None:
-                    print(f"  Dewpoint: {data['dewpoint_temp']:.2f} °C")
-                if data['relative_humidity'] is not None:
-                    print(f"  Humidity: {data['relative_humidity']:.1f} %\n")
+                    temps.append(f"Dewpoint: {data['dewpoint_temp']:.2f}°C")
+                if temps:
+                    print(f"  Temps:    {' | '.join(temps)}")
+                
+                # Humidity readings½
+                rh_source = self.config.get('rh_control_source', 'cell_calc')
+                if data['relative_humidity_control'] is not None:
+                    print(f"  RH (Control): {data['relative_humidity_control']:.1f}% [using {rh_source}]")
+                
+                # Show other RH values for comparison
+                other_rh = []
+                if data['relative_humidity_device'] is not None and rh_source != 'dewmaster':
+                    other_rh.append(f"DewMaster: {data['relative_humidity_device']:.1f}%")
+                if data['relative_humidity_calculated'] is not None and rh_source != 'calculated':
+                    other_rh.append(f"Calc: {data['relative_humidity_calculated']:.1f}%")
+                if data['relative_humidity_cell_calc'] is not None and rh_source != 'cell_calc':
+                    other_rh.append(f"Cell: {data['relative_humidity_cell_calc']:.1f}%")
+                if other_rh:
+                    print(f"  RH (Other):   {' | '.join(other_rh)}")
+                
+                print()
                 
                 # Wait for next sample
                 time.sleep(interval)
@@ -233,20 +311,9 @@ class Controller:
             self.plotter.stop()
     
     def calculate_flow_rates_for_rh(self, target_rh: float, total_flow: float) -> Tuple[float, float]:
-        """
-        Calculate required dry and wet flow rates to achieve target relative humidity.
+        # Assumes: Dry air stream is at 0% RH & Wet air stream is at 100% RH (saturated) - Simple mixing model: RH_result ≈ (wet_flow / total_flow) * 100
         
-        Assumes:
-        - Dry air stream is at 0% RH
-        - Wet air stream is at 100% RH (saturated)
-        - Simple mixing model: RH_result ≈ (wet_flow / total_flow) * 100
-        
-        Args:
-            target_rh: Target relative humidity (0-100)
-            total_flow: Total flow rate in L/min
-        """
-        # Clamp target RH to valid range
-        target_rh = max(0.0, min(100.0, target_rh))
+        target_rh = max(0.0, min(100.0, target_rh)) # Clamp target RH to valid range
         
         # Calculate wet flow as fraction of total flow
         wet_flow = (target_rh / 100.0) * total_flow
@@ -256,19 +323,8 @@ class Controller:
     
     def adjust_flows_for_rh(self, target_rh: float, actual_rh: float, 
                             current_dry_flow: float, current_wet_flow: float,
-                            max_flow: float, adjustment_factor: float = 0.05) -> Tuple[float, float]:
-        """
-        Adjust flow rates to reduce deviation from target RH.
-        Aims to maintain max_flow as total, but allows going below if needed.
-        
-        Args:
-            target_rh: Target relative humidity (0-100)
-            actual_rh: Measured relative humidity (0-100)
-            current_dry_flow: Current dry air flow rate in L/min
-            current_wet_flow: Current wet air flow rate in L/min
-            max_flow: Maximum/target total flow rate in L/min
-            adjustment_factor: Proportional adjustment factor (0-1)
-        """
+                            max_flow: float, adjustment_factor: float = 0.1) -> Tuple[float, float]:
+        # Adjust flow rates to reduce deviation from target RH.
         error = target_rh - actual_rh
         adjustment_factor = adjustment_factor * (1 + (abs(error) / 100.0)) # adjust based on size of error
         
@@ -286,8 +342,7 @@ class Controller:
         # If new dry flow would be negative, adjust both flows proportionally
         if new_dry_flow < 0:
             new_dry_flow = 0
-            # Clamp wet flow to max_flow
-            new_wet_flow = min(max_flow, new_wet_flow)
+            new_wet_flow = min(max_flow, new_wet_flow) # Clamp wet flow to max_flow
         
         # Ensure total doesn't exceed max_flow
         new_total = new_dry_flow + new_wet_flow
@@ -299,9 +354,109 @@ class Controller:
         
         return new_dry_flow, new_wet_flow
     
+    def stabilize_flows_for_rh(self, target_rh: float, max_flow: float, 
+                               stabilization_time: float = 60.0, 
+                               stabilization_tolerance: float = 2.0,
+                               control_interval: float = 5.0,
+                               fallback_tolerance: float = 5.0) -> Tuple[bool, float, float]:
+        # Stabilize flow rates to achieve stable RH within tolerance of target.
+        print(f"    Stabilizing flows for {target_rh:.1f}% RH (tolerance: ±{stabilization_tolerance:.1f}%)")
+        
+        # Calculate initial flow rates
+        dry_flow, wet_flow = self.calculate_flow_rates_for_rh(target_rh, max_flow)
+        
+        # Set initial flows
+        self.set_flow_rates(dry_flow=dry_flow, wet_flow=wet_flow, max_flow=max_flow)
+        time.sleep(5.0)  # Initial settling time
+        
+        stabilization_start = time.time()
+        last_control_time = time.time()
+        stable_readings = []  # Track recent RH readings for stability assessment
+        max_stable_readings = 5  # Number of readings to consider for stability
+        
+        print(f"    Initial flows: Dry {dry_flow:.3f}, Wet {wet_flow:.3f} L/min")
+        
+        while (time.time() - stabilization_start) < stabilization_time:
+            current_time = time.time()
+            
+            # Read current data
+            data = self.read_all_sensors()
+            actual_rh = data.get('relative_humidity_control')
+            
+            if actual_rh is None:
+                print("    No RH reading available, continuing...")
+                time.sleep(1.0)
+                continue
+            
+            # Track RH readings for stability assessment
+            stable_readings.append(actual_rh)
+            if len(stable_readings) > max_stable_readings:
+                stable_readings.pop(0)
+            
+            elapsed = current_time - stabilization_start
+            deviation = abs(actual_rh - target_rh)
+            
+            print(f"    {elapsed:.1f}s: RH {actual_rh:.1f}% (target {target_rh:.1f}%, dev {deviation:.1f}%)")
+            
+            # Check if we have enough readings and they're all within tolerance
+            if len(stable_readings) >= max_stable_readings:
+                all_stable = all(abs(rh - target_rh) <= stabilization_tolerance for rh in stable_readings)
+                rh_range = max(stable_readings) - min(stable_readings)
+                
+                if all_stable and rh_range <= stabilization_tolerance:
+                    print(f"    Flows stabilized! RH stable at {actual_rh:.1f}% (range: {rh_range:.1f}%)")
+                    final_dry = data.get('dry_flow', dry_flow)
+                    final_wet = data.get('wet_flow', wet_flow)
+                    return True, final_dry, final_wet
+            
+            # Adjust flows if needed and enough time has passed
+            if (current_time - last_control_time) >= control_interval:
+                if deviation > stabilization_tolerance:
+                    print(f"    Adjusting flows (deviation {deviation:.1f}% > {stabilization_tolerance:.1f}%)")
+                    
+                    current_dry = data.get('dry_flow', dry_flow)
+                    current_wet = data.get('wet_flow', wet_flow)
+                    
+                    new_dry, new_wet = self.adjust_flows_for_rh(
+                        target_rh=target_rh,
+                        actual_rh=actual_rh,
+                        current_dry_flow=current_dry,
+                        current_wet_flow=current_wet,
+                        max_flow=max_flow,
+                        adjustment_factor=0.03  # Smaller adjustment for stabilization
+                    )
+                    
+                    self.set_flow_rates(dry_flow=new_dry, wet_flow=new_wet, max_flow=max_flow)
+                    dry_flow, wet_flow = new_dry, new_wet
+                    
+                    # Clear stability readings after adjustment
+                    stable_readings.clear()
+                    
+                last_control_time = current_time
+            
+            time.sleep(1.0)  # Check every second during stabilization
+        
+        # Stabilization timeout
+        final_dry = data.get('dry_flow', dry_flow) if 'data' in locals() else dry_flow
+        final_wet = data.get('wet_flow', wet_flow) if 'data' in locals() else wet_flow
+        final_rh = actual_rh if 'actual_rh' in locals() else None
+        
+        if final_rh is not None:
+            final_deviation = abs(final_rh - target_rh)
+            if final_deviation <= fallback_tolerance:  # Use broader tolerance for timeout case
+                print(f"    Stabilization timeout, but RH {final_rh:.1f}% within control tolerance ({fallback_tolerance:.1f}%)")
+                return True, final_dry, final_wet
+            else:
+                print(f"    Stabilization timeout, RH {final_rh:.1f}% outside tolerance (dev: {final_deviation:.1f}%)")
+                return False, final_dry, final_wet
+        else:
+            print("    Stabilization timeout, no RH reading available")
+            return False, final_dry, final_wet
+    
     def run_automated_experiment(self, direction: str = 'up', steps: int = 10, 
                                  duration: float = 5.0, max_flow: float = 2.0,
-                                 control_interval: float = 5.0, rh_tolerance: float = 5.0):
+                                 control_interval: float = 5.0, rh_tolerance: float = 5.0,
+                                 stabilization_time: float = 60.0, stabilization_tolerance: float = 2.0):
         """
         Run an automated humidity ramp experiment with feedback control.
         System aims to maintain max_flow as total flow but may go below if needed for RH control.
@@ -313,6 +468,8 @@ class Controller:
             max_flow: Maximum/target total flow rate (dry + wet) in L/min
             control_interval: Time between control updates in seconds
             rh_tolerance: Maximum allowed deviation from target RH before adjustment (%)
+            stabilization_time: Maximum time to spend stabilizing flows at each step (seconds)
+            stabilization_tolerance: RH tolerance for considering flows stable (%)
         """
         if not self.dry_mfc or not self.wet_mfc:
             raise RuntimeError("Both dry and wet MFCs must be connected for automated experiments")
@@ -334,9 +491,10 @@ class Controller:
         print(f"Target flow rate: {max_flow:.3f} L/min (may go below if needed for RH control)")
         print(f"Control interval: {control_interval:.1f} seconds")
         print(f"RH tolerance: ±{rh_tolerance:.1f}%")
+        print(f"Stabilization time: {stabilization_time:.1f} seconds")
+        print(f"Stabilization tolerance: ±{stabilization_tolerance:.1f}%")
         print("=" * 60 + "\n")
         
-        # Determine start and end RH
         if direction.lower() == 'up':
             start_rh = 0.0
             end_rh = 100.0
@@ -358,23 +516,33 @@ class Controller:
         
         try:
             for step in range(steps + 1):
-                # Calculate target RH for this step
-                target_rh = start_rh + (step * rh_step)
+                target_rh = start_rh + (step * rh_step) # Calculate target RH for this step
                 
-                # Clamp to valid range
-                target_rh = max(0.0, min(100.0, target_rh))
+                target_rh = max(0.0, min(100.0, target_rh)) # Clamp to valid range
                 
                 print(f"\n--- Step {step}/{steps} ---")
                 print(f"Target RH: {target_rh:.1f}%")
                 
-                # Calculate initial flow rates (aim for max_flow as total)
-                dry_flow, wet_flow = self.calculate_flow_rates_for_rh(target_rh, max_flow)
+                # Stabilize flows for this target RH
+                stabilization_success, dry_flow, wet_flow = self.stabilize_flows_for_rh(
+                    target_rh=target_rh,
+                    max_flow=max_flow,
+                    stabilization_time=stabilization_time,
+                    stabilization_tolerance=stabilization_tolerance,
+                    control_interval=control_interval,
+                    fallback_tolerance=rh_tolerance
+                )
                 
-                # Set initial flow rates (validate against max_flow - allows going below)
-                self.set_flow_rates(dry_flow=dry_flow, wet_flow=wet_flow, max_flow=max_flow)
-                time.sleep(2.0)  # Wait for flows to stabilize
+                if not stabilization_success:
+                    print(f"    Warning: Could not fully stabilize flows for step {step}")
+                    print(f"    Proceeding with current flows: Dry {dry_flow:.3f}, Wet {wet_flow:.3f} L/min")
+                else:
+                    print(f"    Flows stabilized for step {step}!")
                 
-                # Control loop for this step
+                print(f"\nStarting data collection phase for step {step}...")
+                time.sleep(1.0)  # Brief pause before data collection
+                
+                # Data collection loop for this step (flows should already be stable)
                 step_start_time = time.time()
                 last_control_time = time.time()
                 
@@ -384,17 +552,15 @@ class Controller:
                     # Read sensors
                     data = self.read_all_sensors()
 
-                    self.warn_if_temp_delta(data)
-                    
                     # Log data
                     self.logger.log_data(data)
                     
                     # Add to plotter
                     self.plotter.add_data_point(data)
                     
-                    actual_rh = data.get('relative_humidity')
+                    actual_rh = data.get('relative_humidity_control')
                     
-                    # Control update
+                    # Periodic status update
                     if (current_time - last_control_time) >= control_interval and actual_rh is not None:
                         deviation = abs(actual_rh - target_rh)
                         
@@ -406,21 +572,38 @@ class Controller:
 
                         print(f"  Time: {elapsed_min:.2f} min / {step_duration_min:.2f} min ({current_time - step_start_time:.1f}s / {step_duration_seconds:.1f}s)")
                         print(f"  Target RH: {target_rh:.1f}% | Actual RH: {actual_rh:.1f}% | Deviation: {deviation:.1f}%")
-                        print(f"  Dry Flow: {data.get('dry_flow', 0):.3f} L/min | Wet Flow: {data.get('wet_flow', 0):.3f} L/min")
+                        
+                        # Flow information
+                        dry_flow_current = data.get('dry_flow', 0)
+                        wet_flow_current = data.get('wet_flow', 0)
+                        total_flow = dry_flow_current + wet_flow_current
+                        print(f"  Flows: Dry {dry_flow_current:.3f} | Wet {wet_flow_current:.3f} | Total {total_flow:.3f} L/min")
 
+                        # Temperature information
                         temps_parts = []
                         if cell_temp is not None:
-                            temps_parts.append(f"Cell Temp: {cell_temp:.2f}°C")
+                            temps_parts.append(f"Cell: {cell_temp:.2f}°C")
                         if ambient_temp is not None:
-                            temps_parts.append(f"Ambient Temp: {ambient_temp:.2f}°C")
+                            temps_parts.append(f"Ambient: {ambient_temp:.2f}°C")
                         if dewpoint_temp is not None:
                             temps_parts.append(f"Dewpoint: {dewpoint_temp:.2f}°C")
                         if temps_parts:
-                            print("  " + " | ".join(temps_parts))
+                            print(f"  Temps: {' | '.join(temps_parts)}")
                         
-                        # If deviation exceeds tolerance, adjust flows
-                        if deviation > rh_tolerance:
-                            print(f"  ⚠ Deviation {deviation:.1f}% exceeds tolerance {rh_tolerance:.1f}% - Adjusting flows...")
+                        # RH comparison information
+                        rh_source = self.config.get('rh_control_source', 'cell_calc')
+                        rh_parts = [f"Control ({rh_source}): {actual_rh:.1f}%"]
+                        if data.get('relative_humidity_device') is not None and rh_source != 'device':
+                            rh_parts.append(f"Device: {data['relative_humidity_device']:.1f}%")
+                        if data.get('relative_humidity_calculated') is not None and rh_source != 'calculated':
+                            rh_parts.append(f"Calc: {data['relative_humidity_calculated']:.1f}%")
+                        if data.get('relative_humidity_cell_calc') is not None and rh_source != 'cell_calc':
+                            rh_parts.append(f"Cell: {data['relative_humidity_cell_calc']:.1f}%")
+                        print(f"  RH: {' | '.join(rh_parts)}")
+                        
+                        # Only make major adjustments if deviation is very large (flows should be stable)
+                        if deviation > rh_tolerance * 2:  # Only adjust if deviation is 2x the tolerance
+                            print(f"  ⚠ Large deviation {deviation:.1f}% (>{rh_tolerance*2:.1f}%) - Making corrective adjustment...")
                             
                             current_dry = data.get('dry_flow', dry_flow)
                             current_wet = data.get('wet_flow', wet_flow)
@@ -431,20 +614,21 @@ class Controller:
                                 current_dry_flow=current_dry,
                                 current_wet_flow=current_wet,
                                 max_flow=max_flow,
-                                adjustment_factor=0.05  # 5% adjustment per control cycle
+                                adjustment_factor=0.02  # Smaller adjustment during data collection
                             )
                             
                             self.set_flow_rates(dry_flow=new_dry, wet_flow=new_wet, max_flow=max_flow)
                             dry_flow, wet_flow = new_dry, new_wet
-                            time.sleep(1.0)  # Brief pause after adjustment
+                            time.sleep(1.0)
+                        elif deviation <= rh_tolerance:
+                            print("  ✅ Within tolerance - flows stable")
                         else:
-                            print("  ✓ Within tolerance")
+                            print(f"  Minor deviation {deviation:.1f}% - maintaining current flows")
                         
                         last_control_time = current_time
                         print()
                     
-                    # Small sleep to avoid excessive CPU usage
-                    time.sleep(0.5)
+                    time.sleep(1)
                 
                 if not self.running:
                     break

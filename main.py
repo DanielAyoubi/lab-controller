@@ -1,38 +1,44 @@
 import time
+import argparse
 from src.cli.parser import parse_cli_args
 from src.devices.controller import Controller
 
 
-def main():
-    args = parse_cli_args()
-
-    # Load configuration from config file
-    config = {}
+def load_config(config_path: str) -> dict:
     try:
         import importlib.util
 
-        spec = importlib.util.spec_from_file_location("config", args.config)
+        spec = importlib.util.spec_from_file_location("config", config_path)
         config_module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(config_module)
+        
         if hasattr(config_module, "CONFIG"):
-            config = config_module.CONFIG.copy()
+            return config_module.CONFIG.copy()
         else:
-            print(f"Warning: Config file {args.config} does not contain CONFIG dictionary")
+            print(f"Warning: Config file {config_path} does not contain CONFIG dictionary")
             print("Using empty configuration\n")
+            return {}
+            
     except FileNotFoundError:
-        print(f"Config file not found: {args.config}")
+        print(f"Config file not found: {config_path}")
         print("Please create a config.py file with your settings\n")
-        return
+        raise SystemExit(1)
+        
     except Exception as e:
         print(f"Error loading config: {e}")
         print("Cannot continue without configuration\n")
-        return
+        raise SystemExit(1)
 
-    # Create control system
+
+def setup_controller(config: dict) -> Controller:
+    # Display system information
     print("=" * 60)
     print("N-SIM Microscope Environmental Control System")
     print("=" * 60)
+    print(f"RH Control Source: {config.get('rh_control_source', 'cell_calc')}")
+    print("=" * 60)
 
+    # Create controller
     controller = Controller(config)
 
     # Connect to devices
@@ -41,38 +47,55 @@ def main():
         response = input("Continue anyway? (y/n): ")
         if response.lower() != "y":
             print("Exiting...")
-            return
+            raise SystemExit(1)
+    
+    return controller
 
-    # Check if running automated experiment
-    if args.experiment: # Ramp experiment changing humidity over predetermined range
-        try:
-            controller.run_automated_experiment(
-                direction=args.direction,
-                steps=args.steps,
-                duration=args.duration,
-                max_flow=args.max_flow,
-                control_interval=args.control_interval,
-                rh_tolerance=args.rh_tolerance
-            )
-        finally:
-            controller.stop()
-            print("\nSystem shutdown complete")
-    else:
-        # Set flow rates if specified
-        if args.dry_flow is not None or args.wet_flow is not None:
-            controller.set_flow_rates(
-                dry_flow=args.dry_flow, 
-                wet_flow=args.wet_flow,
-                max_flow=args.max_flow
-            )
-            time.sleep(1)  # Wait for setpoint to stabilize
 
-        # Start monitoring
-        try:
-            controller.start_monitoring(interval=args.interval)
-        finally:
-            controller.stop()
-            print("\nSystem shutdown complete")
+def run_experiment(controller: Controller, config: dict):
+    # Run automated humidity ramp experiment.
+    controller.run_automated_experiment(
+        direction=config.get('experiment_direction', 'up'),
+        steps=config.get('experiment_steps', 10),
+        duration=config.get('experiment_duration', 60.0),
+        max_flow=config.get('max_flow', 2.0),
+        control_interval=config.get('control_interval', 5.0),
+        rh_tolerance=config.get('rh_tolerance', 5.0),
+        stabilization_time=config.get('stabilization_time', 60.0),
+        stabilization_tolerance=config.get('stabilization_tolerance', 2.0)
+    )
+
+
+def run_monitoring(controller: Controller, config: dict, args: argparse.Namespace):
+    # Run continuous monitoring mode with optional manual flow control.
+    # Set flow rates if specified
+    if args.dry_flow is not None or args.wet_flow is not None:
+        controller.set_flow_rates(
+            dry_flow=args.dry_flow, 
+            wet_flow=args.wet_flow,
+            max_flow=config.get('max_flow', 2.0)
+        )
+        time.sleep(3)  # Wait for setpoint to stabilize
+
+    # Start monitoring
+    controller.start_monitoring(interval=config.get('control_interval', 5))
+
+
+def main():
+    args = parse_cli_args()
+    config = load_config(args.config)
+
+    controller = setup_controller(config)
+
+    # Run the appropriate mode
+    try:
+        if args.experiment:
+            run_experiment(controller, config)
+        else:
+            run_monitoring(controller, config, args)
+    finally:
+        controller.stop()
+        print("\nSystem shutdown complete")
 
 
 if __name__ == "__main__":

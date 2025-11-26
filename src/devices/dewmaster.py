@@ -13,7 +13,7 @@ class DewMaster:
 
         # regex for data lines like:
         # "11/13/25  13:41:50   DP =    2.0 C  AT  =   24.1 C  RH  =   23.5    SERVOLOCK"
-        self.data_pattern = re.compile(r"DP\s*=\s*(?P<dp>-?\d+\.\d)\s*C.*?AT\s*=\s*(?P<at>-?\d+\.\d)", re.IGNORECASE)
+        self.data_pattern = re.compile(r"DP\s*=\s*(?P<dp>-?\d+\.\d)\s*C.*?AT\s*=\s*(?P<at>-?\d+\.\d)\s*C.*?RH\s*=\s*(?P<rh>-?\d+\.\d)", re.IGNORECASE)
 
     def __enter__(self):
         self.connect()
@@ -50,11 +50,13 @@ class DewMaster:
             if m:
                 dewpoint = float(m.group("dp"))
                 ambient = float(m.group("at"))
-                rh = self.compute_relative_humidity(dewpoint, ambient)
+                rh_device = float(m.group("rh"))  # Native RH reading from device
+                rh_calculated = self.compute_relative_humidity(dewpoint, ambient)
                 return {
                     "dewpoint_temp": dewpoint,
                     "ambient_temp": ambient,
-                    "relative_humidity": rh
+                    "relative_humidity_device": rh_device,
+                    "relative_humidity_calculated": rh_calculated
                 }
 
         return None
@@ -75,7 +77,6 @@ class DewMaster:
             num = math.exp(a * dewpoint_c / (b + dewpoint_c))
             den = math.exp(a * ambient_c / (b + ambient_c))
             rh = 100.0 * num / den
-            # Clip to physical range
             return max(0.0, min(100.0, rh))
         except Exception:
             return float('nan')
