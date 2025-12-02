@@ -116,14 +116,20 @@ class RealTimePlotWidget(QWidget):
         if len(self.timestamps) == 0:
             return
 
-        # Convert timestamps to numpy array for masking
+        # Convert timestamps to numpy array once for efficiency
         time_data = np.array(mdates.date2num(list(self.timestamps)))
 
+        # Convert all deques to numpy arrays once
+        dry_flow_data = np.array(list(self.dry_flow), dtype=np.float64)
+        dry_setpoint_data = np.array(list(self.dry_setpoint), dtype=np.float64)
+        wet_flow_data = np.array(list(self.wet_flow), dtype=np.float64)
+        wet_setpoint_data = np.array(list(self.wet_setpoint), dtype=np.float64)
+        ambient_temp_data = np.array(list(self.ambient_temp), dtype=np.float64)
+        dewpoint_temp_data = np.array(list(self.dewpoint_temp), dtype=np.float64)
+        rh_data = np.array(list(self.relative_humidity), dtype=np.float64)
+
         # Helper to update line with valid data only (to ensure lines connect)
-        def update_line(line, data_deque):
-            # Convert to float array (None becomes NaN)
-            y_data = np.array(list(data_deque), dtype=np.float64)
-            
+        def update_line_filtered(line, y_data):
             # Filter valid data
             mask = ~np.isnan(y_data)
             if np.any(mask):
@@ -131,16 +137,16 @@ class RealTimePlotWidget(QWidget):
             else:
                 line.set_data([], [])
 
-        # Update data
-        update_line(self._lines['dry_actual'], self.dry_flow)
-        update_line(self._lines['dry_set'], self.dry_setpoint)
-        update_line(self._lines['wet_actual'], self.wet_flow)
-        update_line(self._lines['wet_set'], self.wet_setpoint)
+        # Update data using pre-converted arrays
+        update_line_filtered(self._lines['dry_actual'], dry_flow_data)
+        update_line_filtered(self._lines['dry_set'], dry_setpoint_data)
+        update_line_filtered(self._lines['wet_actual'], wet_flow_data)
+        update_line_filtered(self._lines['wet_set'], wet_setpoint_data)
         
-        update_line(self._lines['ambient'], self.ambient_temp)
-        update_line(self._lines['dewpoint'], self.dewpoint_temp)
+        update_line_filtered(self._lines['ambient'], ambient_temp_data)
+        update_line_filtered(self._lines['dewpoint'], dewpoint_temp_data)
         
-        update_line(self._lines['rh'], self.relative_humidity)
+        update_line_filtered(self._lines['rh'], rh_data)
 
         # Rescale axes
         for ax in self.canvas.axes:

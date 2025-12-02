@@ -106,23 +106,32 @@ class DynamicPlotter:
         if len(self.timestamps) == 0:
             return
 
-        # Convert timestamps to matplotlib dates (avoid repeated list conversion)
-        time_data = mdates.date2num(list(self.timestamps))
+        # Convert timestamps to numpy array once for efficiency
+        time_data = np.array(mdates.date2num(list(self.timestamps)))
 
         # Update line data efficiently without clearing axes
         if len(time_data) > 0:
+            # Convert deques to numpy arrays once
+            dry_flow_data = np.array(list(self.dry_flow))
+            dry_setpoint_data = np.array(list(self.dry_setpoint))
+            wet_flow_data = np.array(list(self.wet_flow))
+            wet_setpoint_data = np.array(list(self.wet_setpoint))
+            ambient_temp_data = np.array(list(self.ambient_temp))
+            dewpoint_temp_data = np.array(list(self.dewpoint_temp))
+            rh_data = np.array(list(self.relative_humidity))
+            
             # Update flow rate lines
-            self._lines['dry_actual'].set_data(time_data, list(self.dry_flow))
-            self._lines['dry_setpoint'].set_data(time_data, list(self.dry_setpoint))
-            self._lines['wet_actual'].set_data(time_data, list(self.wet_flow))
-            self._lines['wet_setpoint'].set_data(time_data, list(self.wet_setpoint))
+            self._lines['dry_actual'].set_data(time_data, dry_flow_data)
+            self._lines['dry_setpoint'].set_data(time_data, dry_setpoint_data)
+            self._lines['wet_actual'].set_data(time_data, wet_flow_data)
+            self._lines['wet_setpoint'].set_data(time_data, wet_setpoint_data)
             
             # Update temperature lines
-            self._lines['ambient'].set_data(time_data, list(self.ambient_temp))
-            self._lines['dewpoint'].set_data(time_data, list(self.dewpoint_temp))
+            self._lines['ambient'].set_data(time_data, ambient_temp_data)
+            self._lines['dewpoint'].set_data(time_data, dewpoint_temp_data)
             
             # Update humidity line
-            self._lines['rh'].set_data(time_data, list(self.relative_humidity))
+            self._lines['rh'].set_data(time_data, rh_data)
 
         # Rescale axes to fit data
         for ax in self.axes:
