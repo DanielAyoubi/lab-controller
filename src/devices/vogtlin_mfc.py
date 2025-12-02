@@ -1,3 +1,4 @@
+from typing import Optional
 import minimalmodbus
 import struct
 import time
@@ -8,14 +9,8 @@ class VogtlinMFC:
     REG = {
         "flow": 0x0000,
         "temperature": 0x0002,
-        "total_flow": 0x0004,
         "setpoint": 0x0006,
-        "analog_input": 0x0008,
         "valve_signal": 0x000A,
-        "alarm": 0x000C,
-        "error": 0x000D,
-        "control_function": 0x000E,
-        "ramp": 0x000F,
     }
 
     def __init__(
@@ -25,14 +20,14 @@ class VogtlinMFC:
         self.baudrate = baudrate
         self.address = address
         self.name = name
-        self.instrument = None
+        self.instrument: Optional[minimalmodbus.Instrument] = None
 
     def __enter__(self):
         self.connect()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
+        self.disconnect()
 
     def connect(self) -> bool:
         try:
@@ -40,9 +35,6 @@ class VogtlinMFC:
                 self.port, self.address, mode=minimalmodbus.MODE_RTU
             )
             self.instrument.serial.baudrate = self.baudrate
-            self.instrument.serial.bytesize = 8
-            self.instrument.serial.parity = minimalmodbus.serial.PARITY_NONE
-            self.instrument.serial.stopbits = 1
             self.instrument.serial.timeout = 0.5
             time.sleep(0.5)  # wait for bus to stabilize
             print(f"Connected to {self.name} at {self.port} (addr={self.address})")
@@ -53,61 +45,38 @@ class VogtlinMFC:
 
     def disconnect(self):
         if self.instrument and self.instrument.serial.is_open:
-            self.set_flow(0.0)
+            try:
+                self.set_flow(0.0)
+            except Exception:
+                pass
             self.instrument.serial.close()
             print(f"Disconnected {self.name}.")
 
-    # ----------------------------
-    # Low-level helpers
-    # ----------------------------
-    def _read_float(self, address: int, swap: bool = False) -> float:
-        """Reads 2 consecutive Modbus registers as a float."""
+    def _read_float(self, address: int) -> float:
         regs = self.instrument.read_registers(address, 2)
-        if swap:
-            regs = regs[::-1]
         raw_bytes = struct.pack(">HH", *regs)
         return struct.unpack(">f", raw_bytes)[0]
 
-    def _write_float(self, address: int, value: float, swap: bool = False):
-        """Writes a float into 2 consecutive Modbus registers."""
+    def _write_float(self, address: int, value: float):
         raw_bytes = struct.pack(">f", value)
         regs = list(struct.unpack(">HH", raw_bytes))
-        if swap:
-            regs = regs[::-1]
         self.instrument.write_registers(address, regs)
 
-    # ----------------------------
-    # High-level MFC functions
-    # ----------------------------
     def get_flow(self) -> float:
-        """Reads the measured gas flow."""
         return self._read_float(self.REG["flow"])
 
     def get_temperature(self) -> float:
-        """Reads gas temperature."""
         return self._read_float(self.REG["temperature"])
 
-    def get_total_flow(self) -> float:
-        """Reads totalized gas flow."""
-        return self._read_float(self.REG["total_flow"])
-
     def get_valve_signal(self) -> float:
-        """Reads valve control signal."""
         return self._read_float(self.REG["valve_signal"])
 
     def get_setpoint(self) -> float:
-        """Reads current flow setpoint."""
         return self._read_float(self.REG["setpoint"])
 
-    def set_flow_setpoint(self, value: float):
-        """Writes new gas flow setpoint."""
-        self._write_float(self.REG["setpoint"], value)
-        print(f"Setpoint updated to {value:.3f}")
-
     def set_flow(self, value: float) -> bool:
-        """Alias for set_flow_setpoint for compatibility. Returns True on success."""
         try:
-            self.set_flow_setpoint(value)
+            self._write_float(self.REG["setpoint"], value)
             return True
         except Exception as e:
             print(f"Error setting flow on {self.name}: {e}")

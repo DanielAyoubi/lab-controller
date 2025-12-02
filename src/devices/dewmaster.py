@@ -10,25 +10,19 @@ class DewMaster:
         self.timeout = timeout
         self.name = name
         self.ser = None
-
-        # regex for data lines like:
-        # "11/13/25  13:41:50   DP =    2.0 C  AT  =   24.1 C  RH  =   23.5    SERVOLOCK"
+        # Regex for: "DP = -7.6 C  AT = 24.1 C  RH = 23.5"
         self.data_pattern = re.compile(r"DP\s*=\s*(?P<dp>-?\d+\.\d)\s*C.*?AT\s*=\s*(?P<at>-?\d+\.\d)\s*C.*?RH\s*=\s*(?P<rh>-?\d+\.\d)", re.IGNORECASE)
 
     def __enter__(self):
         self.connect()
         return self
 
-    def __exit__(self):
+    def __exit__(self, exc_type, exc_val, exc_tb):
         self.disconnect()
 
     def connect(self):
         try:
-            self.ser = serial.Serial(
-                self.port,
-                self.baudrate,
-                timeout=self.timeout,
-            )
+            self.ser = serial.Serial(self.port, self.baudrate, timeout=self.timeout)
             time.sleep(1)
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
@@ -42,63 +36,49 @@ class DewMaster:
             print(f"Disconnected {self.name}.")
 
     def get_readings(self):
-        self._write("P")
-        lines = self._read_lines(1)
+        if not self.ser or not self.ser.is_open:
+            return None
 
-        for line in lines:
-            m = self.data_pattern.search(line)
-            if m:
-                dewpoint = float(m.group("dp"))
-                ambient = float(m.group("at"))
-                rh_device = float(m.group("rh"))  # Native RH reading from device
-                rh_calculated = self.compute_relative_humidity(dewpoint, ambient)
-                return {
-                    "dewpoint_temp": dewpoint,
-                    "ambient_temp": ambient,
-                    "relative_humidity_device": rh_device,
-                    "relative_humidity_calculated": rh_calculated
-                }
+        self.ser.reset_input_buffer()
+        self.ser.write(b"P\r")
+        self.ser.flush()
+        
+        start_time = time.time()
+        last_nudge = start_time
+        buffer = b""
+        
+        while (time.time() - start_time) < 5.0:
+            if self.ser.in_waiting:
+                buffer += self.ser.read(self.ser.in_waiting)
+                decoded = buffer.decode(errors="ignore")
+                if m := self.data_pattern.search(decoded):
+                    dewpoint = float(m.group("dp"))
+                    ambient = float(m.group("at"))
+                    return {
+                        "dewpoint_temp": dewpoint,
+                        "ambient_temp": ambient,
+                        "relative_humidity_device": float(m.group("rh")),
+                        "relative_humidity_calculated": self.compute_relative_humidity(dewpoint, ambient)
+                    }
+
+            # Nudge if stalled (every 1.0s)
+            if (time.time() - last_nudge) > 1.0:
+                self.ser.write(b"\r")
+                self.ser.flush()
+                last_nudge = time.time()
+
+            time.sleep(0.05)
 
         return None
 
-    def compute_relative_humidity(self, dewpoint_c: float, ambient_c: float) -> float:
-        """Compute relative humidity (%) from dew point and ambient temperature (C).
-
-        Uses the Magnus formula for saturation vapor pressure.
-        RH = 100 * (exp(a*Td/(b+Td)) / exp(a*T/(b+T)))
-        with a=17.625, b=243.04. Returns value clipped to [0, 100].
-        """
-        a = 17.625
-        b = 243.04
+    def compute_relative_humidity(self, dp: float, t: float) -> float:
+        """Compute RH (%) from dew point (dp) and ambient temp (t) using Magnus formula."""
+        a, b = 17.625, 243.04
         try:
-            # Avoid division issues; if dewpoint exceeds ambient, limit to 100%
-            if dewpoint_c >= ambient_c:
-                return 100.0
-            num = math.exp(a * dewpoint_c / (b + dewpoint_c))
-            den = math.exp(a * ambient_c / (b + ambient_c))
-            rh = 100.0 * num / den
-            return max(0.0, min(100.0, rh))
+            if dp >= t: return 100.0
+            num = math.exp(a * dp / (b + dp))
+            den = math.exp(a * t / (b + t))
+            return max(0.0, min(100.0, 100.0 * num / den))
         except Exception:
             return float('nan')
-
-    # --------------------------------------------------------
-    # Helper functions
-    # --------------------------------------------------------
-    def _write(self, cmd: str):
-        if not self.ser or not self.ser.is_open:
-            raise RuntimeError("Serial port not open.")
-        self.ser.write(cmd.encode() + b"\r")
-        self.ser.flush()
-        time.sleep(0.1)
-
-    def _read_lines(self, duration: float = 1.0) -> list[str]:
-        if not self.ser:
-            return []
-        lines = []
-        start = time.time()
-        while time.time() - start < duration:
-            line = self.ser.readline().decode(errors="ignore").strip()
-            if line:
-                lines.append(line)
-        return lines
 

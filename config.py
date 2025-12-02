@@ -25,7 +25,7 @@ CONFIG = {
 
     # Communication settings
     "mfc_baudrate": 9600,
-    "hygrometer_baudrate": 9600,
+    "hygrometer_baudrate": 19200,
 
     # Thermocouple (USB) settings
     "t_probe_enabled": True,
@@ -37,8 +37,8 @@ CONFIG = {
     
     # Automated experiment settings
     "experiment_direction": "up",       # "up" for 0% to 100% RH, "down" for 100% to 0% RH
-    "experiment_steps": 20,             # Number of steps between start and end RH
-    "experiment_duration": 90.0,        # Total experiment duration in minutes
+    "experiment_steps": 10,             # Number of steps between start and end RH
+    "experiment_duration": 60.0,        # Total experiment duration in minutes
     "max_flow": 2.0,                   # Maximum/target total flow rate (dry + wet) in L/min
     "control_interval": 5.0,           # Time between control updates in seconds
     "rh_tolerance": 5.0,               # Maximum allowed deviation from target RH before adjustment (%)
