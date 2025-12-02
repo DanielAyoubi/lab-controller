@@ -1,4 +1,5 @@
 import struct
+import time
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 
@@ -31,6 +32,7 @@ class Thermocouple:
         read_timeout_ms: int = DEFAULT_READ_TIMEOUT_MS,
         clear_buffer_reads: int = DEFAULT_CLEAR_READS,
         buffer_read_length: int = DEFAULT_CLEAR_READ_LENGTH,
+        cache_duration_ms: int = 100,  # Cache readings for 100ms to reduce USB polling
     ):
         self.port = port
         self.vendor_id = vendor_id
@@ -41,11 +43,14 @@ class Thermocouple:
         self.read_timeout_ms = read_timeout_ms
         self.clear_buffer_reads = clear_buffer_reads
         self.buffer_read_length = buffer_read_length
+        self.cache_duration_ms = cache_duration_ms
 
         self.device: Optional[usb.core.Device] = None
         self._connected = False
         self._claimed_interface: Optional[int] = None
         self._last_sample_time: Optional[datetime] = None
+        self._cached_temperature: Optional[float] = None
+        self._cache_timestamp: float = 0.0  # Use time.time() for better performance
 
     def connect(self) -> bool:
         try:
@@ -105,6 +110,12 @@ class Thermocouple:
         if self.device is None:
             return None
 
+        # Check if cached value is still valid (using time.time() for performance)
+        current_time = time.time()
+        cache_age_ms = (current_time - self._cache_timestamp) * 1000
+        if self._cached_temperature is not None and cache_age_ms < self.cache_duration_ms:
+            return self._cached_temperature
+
         try:
             self.device.write(self.write_endpoint, self.TEMPERATURE_COMMAND)
             raw = self.device.read(self.read_endpoint, 128, timeout=self.read_timeout_ms)
@@ -115,6 +126,12 @@ class Thermocouple:
         temperature, timestamp = self._parse_frame(bytes(raw))
         if timestamp:
             self._last_sample_time = timestamp
+        
+        # Update cache (using time.time() for performance)
+        if temperature is not None:
+            self._cached_temperature = temperature
+            self._cache_timestamp = current_time
+        
         return temperature
 
     def get_last_sample_time(self) -> Optional[datetime]:

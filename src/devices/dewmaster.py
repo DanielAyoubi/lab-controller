@@ -39,6 +39,7 @@ class DewMaster:
         if not self.ser or not self.ser.is_open:
             return None
 
+        # Clear input buffer only once before starting
         self.ser.reset_input_buffer()
         self.ser.write(b"P\r")
         self.ser.flush()
@@ -61,7 +62,7 @@ class DewMaster:
                         "relative_humidity_calculated": self.compute_relative_humidity(dewpoint, ambient)
                     }
 
-            # Nudge if stalled (every 1.0s)
+            # Nudge if stalled (every 1.0s) - no buffer reset needed
             if (time.time() - last_nudge) > 1.0:
                 self.ser.write(b"\r")
                 self.ser.flush()

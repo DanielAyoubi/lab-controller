@@ -30,6 +30,9 @@ class DynamicPlotter:
             "N-SIM Microscope Environmental Control", fontsize=14, fontweight="bold"
         )
 
+        # Store line objects for efficient updates
+        self._lines = {}
+
         # Configure subplots
         self._setup_plots()
 
@@ -38,33 +41,35 @@ class DynamicPlotter:
         self.is_running = False
 
     def _setup_plots(self):
-        """Configure the plot layouts"""
+        """Configure the plot layouts and initialize line objects"""
         # Plot 1: Flow rates
+        self._lines['dry_actual'], = self.axes[0].plot([], [], "b-", linewidth=2, label="Dry Air (Actual)")
+        self._lines['dry_setpoint'], = self.axes[0].plot([], [], "b--", linewidth=1, alpha=0.7, label="Dry Air (Setpoint)")
+        self._lines['wet_actual'], = self.axes[0].plot([], [], "r-", linewidth=2, label="Wet Air (Actual)")
+        self._lines['wet_setpoint'], = self.axes[0].plot([], [], "r--", linewidth=1, alpha=0.7, label="Wet Air (Setpoint)")
+        
         self.axes[0].set_title("Mass Flow Controllers", fontweight="bold")
         self.axes[0].set_ylabel("Flow Rate (ml/min)")
         self.axes[0].grid(True, alpha=0.3)
-        self.axes[0].legend(
-            [
-                "Dry Air (Actual)",
-                "Dry Air (Setpoint)",
-                "Wet Air (Actual)",
-                "Wet Air (Setpoint)",
-            ],
-            loc="upper right",
-        )
+        self.axes[0].legend(loc="upper right")
 
         # Plot 2: Temperature
+        self._lines['ambient'], = self.axes[1].plot([], [], "g-", linewidth=2, label="Ambient")
+        self._lines['dewpoint'], = self.axes[1].plot([], [], "c-", linewidth=2, label="Dewpoint")
+        
         self.axes[1].set_title("Temperature Measurements", fontweight="bold")
         self.axes[1].set_ylabel("Temperature (°C)")
         self.axes[1].grid(True, alpha=0.3)
-        self.axes[1].legend(["Ambient", "Dewpoint"], loc="upper right")
+        self.axes[1].legend(loc="upper right")
 
         # Plot 3: Humidity
+        self._lines['rh'], = self.axes[2].plot([], [], "m-", linewidth=2, label="RH")
+        
         self.axes[2].set_title("Relative Humidity", fontweight="bold")
         self.axes[2].set_ylabel("Humidity (%)")
         self.axes[2].set_xlabel("Time")
         self.axes[2].grid(True, alpha=0.3)
-        self.axes[2].legend(["RH"], loc="upper right")
+        self.axes[2].legend(loc="upper right")
 
         # Format x-axis for time display
         for ax in self.axes:
@@ -101,83 +106,40 @@ class DynamicPlotter:
         if len(self.timestamps) == 0:
             return
 
-        # Clear axes
+        # Convert timestamps to numpy array once for efficiency
+        time_data = np.array(mdates.date2num(list(self.timestamps)))
+
+        # Update line data efficiently without clearing axes
+        if len(time_data) > 0:
+            # Convert deques to numpy arrays once
+            dry_flow_data = np.array(list(self.dry_flow))
+            dry_setpoint_data = np.array(list(self.dry_setpoint))
+            wet_flow_data = np.array(list(self.wet_flow))
+            wet_setpoint_data = np.array(list(self.wet_setpoint))
+            ambient_temp_data = np.array(list(self.ambient_temp))
+            dewpoint_temp_data = np.array(list(self.dewpoint_temp))
+            rh_data = np.array(list(self.relative_humidity))
+            
+            # Update flow rate lines
+            self._lines['dry_actual'].set_data(time_data, dry_flow_data)
+            self._lines['dry_setpoint'].set_data(time_data, dry_setpoint_data)
+            self._lines['wet_actual'].set_data(time_data, wet_flow_data)
+            self._lines['wet_setpoint'].set_data(time_data, wet_setpoint_data)
+            
+            # Update temperature lines
+            self._lines['ambient'].set_data(time_data, ambient_temp_data)
+            self._lines['dewpoint'].set_data(time_data, dewpoint_temp_data)
+            
+            # Update humidity line
+            self._lines['rh'].set_data(time_data, rh_data)
+
+        # Rescale axes to fit data
         for ax in self.axes:
-            ax.clear()
+            ax.relim()
+            ax.autoscale_view()
 
-        # Convert timestamps to matplotlib dates
-        time_data = mdates.date2num(list(self.timestamps))
-
-        # Plot 1: Flow rates
-        if len(time_data) > 0:
-            self.axes[0].plot(
-                time_data,
-                list(self.dry_flow),
-                "b-",
-                linewidth=2,
-                label="Dry Air (Actual)",
-            )
-            self.axes[0].plot(
-                time_data,
-                list(self.dry_setpoint),
-                "b--",
-                linewidth=1,
-                alpha=0.7,
-                label="Dry Air (Setpoint)",
-            )
-            self.axes[0].plot(
-                time_data,
-                list(self.wet_flow),
-                "r-",
-                linewidth=2,
-                label="Wet Air (Actual)",
-            )
-            self.axes[0].plot(
-                time_data,
-                list(self.wet_setpoint),
-                "r--",
-                linewidth=1,
-                alpha=0.7,
-                label="Wet Air (Setpoint)",
-            )
-
-        self.axes[0].set_title("Mass Flow Controllers", fontweight="bold")
-        self.axes[0].set_ylabel("Flow Rate (ml/min)")
-        self.axes[0].grid(True, alpha=0.3)
-        self.axes[0].legend(loc="upper right")
-
-        # Plot 2: Temperature
-        if len(time_data) > 0:
-            self.axes[1].plot(
-                time_data, list(self.ambient_temp), "g-", linewidth=2, label="Ambient"
-            )
-            self.axes[1].plot(
-                time_data, list(self.dewpoint_temp), "c-", linewidth=2, label="Dewpoint"
-            )
-
-        self.axes[1].set_title("Temperature Measurements", fontweight="bold")
-        self.axes[1].set_ylabel("Temperature (°C)")
-        self.axes[1].grid(True, alpha=0.3)
-        self.axes[1].legend(loc="upper right")
-
-        # Plot 3: Humidity
-        if len(time_data) > 0:
-            self.axes[2].plot(
-                time_data, list(self.relative_humidity), "m-", linewidth=2, label="RH"
-            )
-
-        self.axes[2].set_title("Relative Humidity", fontweight="bold")
-        self.axes[2].set_ylabel("Humidity (%)")
-        self.axes[2].set_xlabel("Time")
-        self.axes[2].grid(True, alpha=0.3)
-        self.axes[2].legend(loc="upper right")
-
-        # Format x-axis
-        for ax in self.axes:
-            ax.xaxis.set_major_formatter(DateFormatter("%H:%M:%S"))
-            plt.setp(ax.xaxis.get_majorticklabels(), rotation=45, ha="right")
-
-        plt.tight_layout()
+        # Redraw canvas
+        self.fig.canvas.draw_idle()
 
     def start(self, data_source_callback=None):
         self.is_running = True
