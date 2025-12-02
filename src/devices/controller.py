@@ -170,25 +170,42 @@ class Controller:
             )
         
         # Determine which RH value to use for control based on configuration
-        rh_source = self.config.get('rh_control_source', 'cell_calc')
-        
-        # Priority: Configured Source -> Cell Calc -> Calculated -> Device
-        if rh_source == 'dewmaster' and data['relative_humidity_device'] is not None:
-            data['relative_humidity_control'] = data['relative_humidity_device']
-        elif rh_source == 'calculated' and data['relative_humidity_calculated'] is not None:
-            data['relative_humidity_control'] = data['relative_humidity_calculated']
-        elif rh_source == 'cell_calc' and data['relative_humidity_cell_calc'] is not None:
-            data['relative_humidity_control'] = data['relative_humidity_cell_calc']
-        else:
-            # Fallback hierarchy
-            if data['relative_humidity_cell_calc'] is not None:
-                data['relative_humidity_control'] = data['relative_humidity_cell_calc']
-            elif data['relative_humidity_calculated'] is not None:
-                data['relative_humidity_control'] = data['relative_humidity_calculated']
-            elif data['relative_humidity_device'] is not None:
-                data['relative_humidity_control'] = data['relative_humidity_device']
+        data['relative_humidity_control'] = self._select_rh_for_control(data)
         
         return data
+    
+    def _select_rh_for_control(self, data: Dict[str, Optional[float]]) -> Optional[float]:
+        """
+        Select the appropriate RH value for control based on configuration.
+        
+        Args:
+            data: Dictionary containing RH readings
+            
+        Returns:
+            Selected RH value or None if unavailable
+        """
+        rh_source = self.config.get('rh_control_source', 'cell_calc')
+        
+        # Map of source names to data keys
+        rh_sources = {
+            'dewmaster': 'relative_humidity_device',
+            'calculated': 'relative_humidity_calculated',
+            'cell_calc': 'relative_humidity_cell_calc'
+        }
+        
+        # Try configured source first
+        if rh_source in rh_sources:
+            value = data.get(rh_sources[rh_source])
+            if value is not None:
+                return value
+        
+        # Fallback hierarchy: cell_calc -> calculated -> device
+        for fallback_key in ['relative_humidity_cell_calc', 'relative_humidity_calculated', 'relative_humidity_device']:
+            value = data.get(fallback_key)
+            if value is not None:
+                return value
+        
+        return None
     
     def set_flow_rates(self, dry_flow: Optional[float] = None, wet_flow: Optional[float] = None, 
                        max_flow: Optional[float] = None):
