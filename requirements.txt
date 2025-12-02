@@ -3,3 +3,5 @@ pandas>=1.5.0
 matplotlib>=3.5.0
 numpy>=1.21.0
 PyQt6>=6.4.0
+pyusb>=1.2.0
+libusb-package>=1.0.26.0

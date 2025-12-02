@@ -365,7 +365,8 @@ class Controller:
         return last_data
 
     def stabilize_flows_for_rh(self, target_rh: float, max_flow: float, 
-                               on_data: Optional[Callable[[Dict], None]] = None, stabilization_tolerance: float = 2.0) -> Tuple[bool, float, float]:
+                               on_data: Optional[Callable[[Dict], None]] = None, stabilization_tolerance: float = 2.0,
+                               stabilization_time: float = 60.0) -> Tuple[bool, float, float]:
         # Stabilize flow rates to achieve stable RH within tolerance of target.
         print(f"    Stabilizing flows for {target_rh:.1f}% RH")
         
@@ -404,9 +405,9 @@ class Controller:
         # Ensure final set
         self.set_flow_rates(dry_flow=dry_flow, wet_flow=wet_flow, max_flow=max_flow)
         
-        # 3. Equilibrate (60s)
-        print("    Equilibrating for 60 seconds...")
-        last_data = self._wait_and_log(60.0, on_data)
+        # 3. Equilibrate (stabilization_time)
+        print(f"    Equilibrating for {stabilization_time} seconds...")
+        last_data = self._wait_and_log(stabilization_time, on_data)
         
         # 4. Feedback Loop
         print("    Checking RH deviation...")
@@ -443,6 +444,7 @@ class Controller:
             
         return False, dry_flow, wet_flow
     
+
     def run_automated_experiment(self, direction: str = 'up', steps: int = 10, 
                                  duration: float = 5.0, max_flow: float = 2.0,
                                  control_interval: float = 5.0, rh_tolerance: float = 5.0,
@@ -454,15 +456,33 @@ class Controller:
         if not self.hygrometer:
             raise RuntimeError("Hygrometer must be connected for automated experiments")
         
-        # Convert duration from minutes to seconds for internal calculations
-        duration_seconds = duration * 60.0
+        # Calculate duration per step (duration is total time in minutes)
+        # We need to account for stabilization overhead to make the total duration accurate
+        
+        # Overhead per step: Ramping (50s) + Stabilization (stabilization_time)
+        ramping_time = 50.0
+        overhead_per_step = ramping_time + stabilization_time
+        total_overhead_seconds = (steps + 1) * overhead_per_step
+        
+        total_requested_seconds = duration * 60.0
+        available_data_seconds = total_requested_seconds - total_overhead_seconds
+        
+        if available_data_seconds < 0:
+            print(f"Warning: Requested duration ({duration} min) is too short for stabilization overhead ({total_overhead_seconds/60:.1f} min).")
+            print("Setting data collection time to minimal (10s).")
+            duration_seconds = 10.0
+        else:
+            duration_seconds = available_data_seconds / (steps + 1)
+            
+        step_duration_minutes = duration_seconds / 60.0
         
         print("\n" + "=" * 60)
         print("Starting Automated Humidity Ramp Experiment")
         print("=" * 60)
         print(f"Direction: {direction.upper()}")
         print(f"Steps: {steps}")
-        print(f"Step Duration: {duration:.1f} minutes")
+        print(f"Total Duration: {duration:.1f} minutes")
+        print(f"Step Duration: {step_duration_minutes:.1f} minutes")
         print(f"Target Flow: {max_flow:.3f} L/min")
         print("=" * 60 + "\n")
         
@@ -501,7 +521,9 @@ class Controller:
                 stabilization_success, dry_flow, wet_flow = self.stabilize_flows_for_rh(
                     target_rh=target_rh,
                     max_flow=max_flow,
-                    on_data=on_data
+                    on_data=on_data,
+                    stabilization_time=stabilization_time,
+                    stabilization_tolerance=stabilization_tolerance
                 )
                 
                 if not stabilization_success:
@@ -509,7 +531,7 @@ class Controller:
                 else:
                     print(f"    Flows stabilized for step {step}!")
                 
-                print(f"\nStarting data collection phase for step {step}...")
+                print(f"\nStarting data collection phase for step {step}... {step_duration_minutes:.1f} minutes")
                 
                 # Data collection loop
                 self._wait_and_log(duration_seconds, on_data)

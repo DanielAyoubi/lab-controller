@@ -5,6 +5,8 @@ from typing import Optional, Tuple
 
 import usb.core
 import usb.util
+import usb.backend.libusb1
+import libusb_package
 
 
 class Thermocouple:
@@ -54,7 +56,16 @@ class Thermocouple:
 
     def connect(self) -> bool:
         try:
-            self.device = usb.core.find(idVendor=self.vendor_id, idProduct=self.product_id)
+            # Find libusb library from libusb-package to avoid "No backend available" on Windows
+            backend = None
+            try:
+                lib_path = libusb_package.find_library(candidate="libusb-1.0")
+                if lib_path:
+                    backend = usb.backend.libusb1.get_backend(find_library=lambda x: lib_path)
+            except Exception:
+                pass
+
+            self.device = usb.core.find(idVendor=self.vendor_id, idProduct=self.product_id, backend=backend)
             if self.device is None:
                 raise ValueError("Thermocouple device not found")
 
