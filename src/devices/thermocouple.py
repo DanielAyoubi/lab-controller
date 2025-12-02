@@ -1,4 +1,5 @@
 import struct
+import time
 from datetime import datetime, timezone
 from typing import Optional, Tuple
 
@@ -49,7 +50,7 @@ class Thermocouple:
         self._claimed_interface: Optional[int] = None
         self._last_sample_time: Optional[datetime] = None
         self._cached_temperature: Optional[float] = None
-        self._cache_timestamp: Optional[datetime] = None
+        self._cache_timestamp: float = 0.0  # Use time.time() for better performance
 
     def connect(self) -> bool:
         try:
@@ -109,11 +110,11 @@ class Thermocouple:
         if self.device is None:
             return None
 
-        # Check if cached value is still valid
-        if self._cached_temperature is not None and self._cache_timestamp is not None:
-            cache_age_ms = (datetime.now(timezone.utc) - self._cache_timestamp).total_seconds() * 1000
-            if cache_age_ms < self.cache_duration_ms:
-                return self._cached_temperature
+        # Check if cached value is still valid (using time.time() for performance)
+        current_time = time.time()
+        cache_age_ms = (current_time - self._cache_timestamp) * 1000
+        if self._cached_temperature is not None and cache_age_ms < self.cache_duration_ms:
+            return self._cached_temperature
 
         try:
             self.device.write(self.write_endpoint, self.TEMPERATURE_COMMAND)
@@ -126,10 +127,10 @@ class Thermocouple:
         if timestamp:
             self._last_sample_time = timestamp
         
-        # Update cache
+        # Update cache (using time.time() for performance)
         if temperature is not None:
             self._cached_temperature = temperature
-            self._cache_timestamp = datetime.now(timezone.utc)
+            self._cache_timestamp = current_time
         
         return temperature
 

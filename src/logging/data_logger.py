@@ -47,9 +47,11 @@ class DataLogger:
         self.current_file = self._generate_filename()
         
         # Open file handle and keep it open for efficient writing
-        self._file_handle = open(self.current_file, 'w', newline='', buffering=1)
+        # Use larger buffer for better performance with high-frequency logging
+        self._file_handle = open(self.current_file, 'w', newline='', buffering=8192)
         self._csv_writer = csv.DictWriter(self._file_handle, fieldnames=self.fieldnames)
         self._csv_writer.writeheader()
+        self._file_handle.flush()  # Ensure header is written immediately
         
         print(f"Started new log file: {self.current_file}")
     
@@ -118,12 +120,20 @@ class DataLogger:
         Close the current log file handle if open.
         """
         if self._file_handle:
-            self._file_handle.close()
-            self._file_handle = None
-            self._csv_writer = None
+            try:
+                self._file_handle.flush()
+                self._file_handle.close()
+            except Exception:
+                pass  # Ignore errors during cleanup
+            finally:
+                self._file_handle = None
+                self._csv_writer = None
     
     def __del__(self):
         """
         Ensure file handle is closed on deletion.
         """
-        self.close()
+        try:
+            self.close()
+        except Exception:
+            pass  # Prevent exceptions during garbage collection
