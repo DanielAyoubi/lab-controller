@@ -33,7 +33,7 @@ CONFIG = {
     "t_probe_product_id": 0x0004,
 
     # Relative humidity control settings
-    "rh_control_source": "cell_calc",  # Options: "dewmaster" (DewMaster native), "calculated" (dewpoint+ambient), "cell_calc" (dewpoint+cell)
+    "rh_temperature_source": "cell",  # Options: "ambient" (DewMaster ambient temp), "cell" (Thermocouple cell temp)
     
     # Automated experiment settings
     "experiment_direction": "up",       # "up" for 0% to 100% RH, "down" for 100% to 0% RH

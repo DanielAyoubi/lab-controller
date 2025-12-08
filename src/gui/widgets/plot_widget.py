@@ -29,8 +29,10 @@ class RealTimePlotWidget(QWidget):
         self.dry_setpoint = deque(maxlen=max_points)
         self.wet_setpoint = deque(maxlen=max_points)
         self.ambient_temp = deque(maxlen=max_points)
+        self.cell_temp = deque(maxlen=max_points)
         self.dewpoint_temp = deque(maxlen=max_points)
-        self.relative_humidity = deque(maxlen=max_points)
+        self.rh_device = deque(maxlen=max_points)
+        self.rh_cell = deque(maxlen=max_points)
 
         # Layout
         layout = QVBoxLayout()
@@ -40,6 +42,20 @@ class RealTimePlotWidget(QWidget):
 
         self._lines = {}
         self._setup_plots()
+
+    def set_max_points(self, max_points: int):
+        self.max_points = max_points
+        # Re-create deques with new maxlen, preserving existing data
+        self.timestamps = deque(self.timestamps, maxlen=max_points)
+        self.dry_flow = deque(self.dry_flow, maxlen=max_points)
+        self.wet_flow = deque(self.wet_flow, maxlen=max_points)
+        self.dry_setpoint = deque(self.dry_setpoint, maxlen=max_points)
+        self.wet_setpoint = deque(self.wet_setpoint, maxlen=max_points)
+        self.ambient_temp = deque(self.ambient_temp, maxlen=max_points)
+        self.cell_temp = deque(self.cell_temp, maxlen=max_points)
+        self.dewpoint_temp = deque(self.dewpoint_temp, maxlen=max_points)
+        self.rh_device = deque(self.rh_device, maxlen=max_points)
+        self.rh_cell = deque(self.rh_cell, maxlen=max_points)
 
     def _setup_plots(self):
         ax1, ax2, ax3 = self.canvas.axes
@@ -57,6 +73,7 @@ class RealTimePlotWidget(QWidget):
         
         # Plot 2: Temperature
         self._lines['ambient'], = ax2.plot([], [], "g.-", label="Ambient")
+        self._lines['cell'], = ax2.plot([], [], "r.-", label="Cell")
         self._lines['dewpoint'], = ax2.plot([], [], "c.-", label="Dewpoint")
 
         ax2.set_title("Temperature", fontweight="bold", fontsize=10)
@@ -65,7 +82,8 @@ class RealTimePlotWidget(QWidget):
         ax2.legend(loc="upper left", fontsize='small')
 
         # Plot 3: Humidity
-        self._lines['rh'], = ax3.plot([], [], "m.-", label="RH")
+        self._lines['rh_device'], = ax3.plot([], [], "m.-", label="Read RH")
+        self._lines['rh_cell'], = ax3.plot([], [], "b.-", label="Calc RH")
 
         ax3.set_title("Relative Humidity", fontweight="bold", fontsize=10)
         ax3.set_ylabel("RH (%)", fontsize=9)
@@ -97,18 +115,10 @@ class RealTimePlotWidget(QWidget):
         self.dry_setpoint.append(data.get("dry_flow_setpoint", np.nan))
         self.wet_setpoint.append(data.get("wet_flow_setpoint", np.nan))
         self.ambient_temp.append(data.get("ambient_temp", np.nan))
+        self.cell_temp.append(data.get("cell_temp", np.nan))
         self.dewpoint_temp.append(data.get("dewpoint_temp", np.nan))
-        
-        # Choose the best RH source to display
-        rh = data.get("relative_humidity_control")
-        if rh is None:
-            rh = data.get("relative_humidity_cell_calc")
-        if rh is None:
-            rh = data.get("relative_humidity_calculated")
-        if rh is None:
-            rh = data.get("relative_humidity_device")
-            
-        self.relative_humidity.append(rh if rh is not None else np.nan)
+        self.rh_device.append(data.get("rh_device", np.nan))
+        self.rh_cell.append(data.get("rh_cell", np.nan))
 
         self._redraw()
 
@@ -125,8 +135,10 @@ class RealTimePlotWidget(QWidget):
         wet_flow_data = np.array(list(self.wet_flow), dtype=np.float64)
         wet_setpoint_data = np.array(list(self.wet_setpoint), dtype=np.float64)
         ambient_temp_data = np.array(list(self.ambient_temp), dtype=np.float64)
+        cell_temp_data = np.array(list(self.cell_temp), dtype=np.float64)
         dewpoint_temp_data = np.array(list(self.dewpoint_temp), dtype=np.float64)
-        rh_data = np.array(list(self.relative_humidity), dtype=np.float64)
+        rh_device_data = np.array(list(self.rh_device), dtype=np.float64)
+        rh_cell_data = np.array(list(self.rh_cell), dtype=np.float64)
 
         # Helper to update line with valid data only (to ensure lines connect)
         def update_line_filtered(line, y_data):
@@ -136,21 +148,22 @@ class RealTimePlotWidget(QWidget):
                 line.set_data(time_data[mask], y_data[mask])
             else:
                 line.set_data([], [])
-
-        # Update data using pre-converted arrays
+        
         update_line_filtered(self._lines['dry_actual'], dry_flow_data)
         update_line_filtered(self._lines['dry_set'], dry_setpoint_data)
         update_line_filtered(self._lines['wet_actual'], wet_flow_data)
         update_line_filtered(self._lines['wet_set'], wet_setpoint_data)
         
         update_line_filtered(self._lines['ambient'], ambient_temp_data)
+        update_line_filtered(self._lines['cell'], cell_temp_data)
         update_line_filtered(self._lines['dewpoint'], dewpoint_temp_data)
         
-        update_line_filtered(self._lines['rh'], rh_data)
+        update_line_filtered(self._lines['rh_device'], rh_device_data)
+        update_line_filtered(self._lines['rh_cell'], rh_cell_data)
 
         # Rescale axes
         for ax in self.canvas.axes:
             ax.relim()
             ax.autoscale_view()
-
-        self.canvas.draw()
+        
+        self.canvas.draw_idle()

@@ -13,6 +13,7 @@ from PyQt6.QtCore import QTimer, Qt
 from src.devices.controller import Controller
 from src.gui.widgets.plot_widget import RealTimePlotWidget
 from src.gui.workers import ExperimentWorker
+from src.gui.settings_dialog import SettingsDialog
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -24,7 +25,7 @@ class MainWindow(QMainWindow):
         self.config = self.load_config("config.py")
         
         # Initialize Controller
-        self.controller = Controller(self.config, enable_plotter=False)
+        self.controller = Controller(self.config)
         self.experiment_worker: Optional[ExperimentWorker] = None
 
         # Setup UI
@@ -52,6 +53,28 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"Error loading config: {e}")
         return {}
+
+    def open_settings(self):
+        dialog = SettingsDialog(self.config, self)
+        if dialog.exec():
+            new_settings = dialog.get_settings()
+            self.config.update(new_settings)
+            
+            # Update controller settings
+            if self.controller:
+                self.controller.update_settings(self.config)
+
+            # Apply changes
+            if hasattr(self, 'plot_widget'):
+                self.plot_widget.set_max_points(self.config.get('max_plot_points', 500))
+            
+            # Update timer interval
+            self.update_timer.setInterval(self.config.get('plot_update_interval', 1000))
+            
+            # If ports changed, maybe warn user to reconnect
+            QMessageBox.information(self, "Settings Updated", 
+                                    "Settings have been updated. \n"
+                                    "If you changed device ports, please disconnect and reconnect.")
 
     def _create_left_panel(self):
         panel = QWidget()
@@ -132,6 +155,11 @@ class MainWindow(QMainWindow):
         
         readings_group.setLayout(readings_layout)
         layout.addWidget(readings_group)
+
+        # Settings
+        self.btn_settings = QPushButton("Settings")
+        self.btn_settings.clicked.connect(self.open_settings)
+        layout.addWidget(self.btn_settings)
 
         layout.addStretch()
         self.main_layout.addWidget(panel)
@@ -229,7 +257,7 @@ class MainWindow(QMainWindow):
             if temp is not None:
                 self.lbl_temp.setText(f"{temp:.2f} °C")
                 
-            rh = data.get('relative_humidity_control') or data.get('relative_humidity_cell_calc') or data.get('relative_humidity_calculated')
+            rh = data.get('relative_humidity')
             if rh is not None:
                 self.lbl_rh.setText(f"{rh:.2f} %")
 
