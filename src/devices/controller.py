@@ -13,6 +13,7 @@ class Controller:
     def __init__(self, config: Dict):
         self.config = config
         self.running = False
+        self.connected = False
         
         # Initialize devices
         self.dry_mfc: Optional[VogtlinMFC] = None
@@ -34,6 +35,9 @@ class Controller:
             'cell_temp', 'ambient_temp', 'dewpoint_temp',
             'relative_humidity', 'rh_device', 'rh_cell'
         ]
+        
+    def is_connected(self) -> bool:
+        return self.connected
         
     def connect_devices(self) -> bool:
         success = True
@@ -94,6 +98,7 @@ class Controller:
             else:
                 print("Temperature Probe connected successfully")
         
+        self.connected = success
         return success
     
     def disconnect_devices(self):
@@ -114,6 +119,8 @@ class Controller:
         if self.t_probe:
             self.t_probe.disconnect()
             print("Temperature Probe disconnected")
+            
+        self.connected = False
     
     def read_all_sensors(self) -> Dict[str, Optional[float]]:
         data = {

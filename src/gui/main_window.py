@@ -245,7 +245,10 @@ class MainWindow(QMainWindow):
         # The controller.read_all_sensors() handles missing devices by returning None
         try:
             if data is None:
-                data = self.controller.read_all_sensors()
+                if self.controller.is_connected():
+                    data = self.controller.read_all_sensors()
+                else:
+                    return
             
             # Update Labels
             if data.get('dry_flow') is not None:
