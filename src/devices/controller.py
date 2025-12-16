@@ -6,6 +6,7 @@ from typing import Optional, Dict, Tuple, Callable
 from src.devices.vogtlin_mfc import VogtlinMFC
 from src.devices.dewmaster import DewMaster
 from src.devices.thermocouple import Thermocouple
+from src.devices.chiller import JulaboChiller
 from src.logging.data_logger import DataLogger
 
 
@@ -20,6 +21,7 @@ class Controller:
         self.wet_mfc: Optional[VogtlinMFC] = None
         self.hygrometer: Optional[DewMaster] = None
         self.t_probe: Optional[Thermocouple] = None
+        self.chiller: Optional[JulaboChiller] = None
         
         # Initialize logger
         self.logger = DataLogger(
@@ -33,7 +35,8 @@ class Controller:
             'dry_flow', 'wet_flow', 
             'dry_flow_setpoint', 'wet_flow_setpoint',
             'cell_temp', 'ambient_temp', 'dewpoint_temp',
-            'relative_humidity', 'rh_device', 'rh_cell'
+            'relative_humidity', 'rh_device', 'rh_cell',
+            'chiller_temp', 'chiller_setpoint'
         ]
         
     def is_connected(self) -> bool:
@@ -97,6 +100,19 @@ class Controller:
                 success = False
             else:
                 print("Temperature Probe connected successfully")
+
+        # Connect Chiller
+        if self.config.get('chiller_enabled', False) and 'chiller_port' in self.config:
+            print(f"Connecting to Julabo Chiller on {self.config['chiller_port']}...")
+            self.chiller = JulaboChiller(
+                port=self.config['chiller_port'],
+                baudrate=self.config.get('chiller_baudrate', 4800)
+            )
+            if not self.chiller.connect():
+                print("Failed to connect to Julabo Chiller")
+                success = False
+            else:
+                print("Julabo Chiller connected successfully")
         
         self.connected = success
         return success
@@ -119,7 +135,12 @@ class Controller:
         if self.t_probe:
             self.t_probe.disconnect()
             print("Temperature Probe disconnected")
+
+        if self.chiller:
+            self.chiller.disconnect()
+            print("Julabo Chiller disconnected")
             
+        self.running = False
         self.connected = False
     
     def read_all_sensors(self) -> Dict[str, Optional[float]]:
@@ -130,7 +151,8 @@ class Controller:
             'cell_temp': None, 'ambient_temp': None, 'dewpoint_temp': None,
             'relative_humidity': None,
             'rh_device': None,
-            'rh_cell': None
+            'rh_cell': None,
+            'chiller_temp': None, 'chiller_setpoint': None
         }
         
         # Read dry MFC
@@ -154,6 +176,18 @@ class Controller:
         # Read thermocouple
         if self.t_probe:
             data['cell_temp'] = self.t_probe.get_temperature()
+
+        # Read chiller
+        if self.chiller:
+            try:
+                temp = self.chiller.get_actual_temperature()
+                if temp:
+                    data['chiller_temp'] = float(temp)
+                sp = self.chiller.get_setpoint_temperature()
+                if sp:
+                    data['chiller_setpoint'] = float(sp)
+            except ValueError:
+                pass
 
         # Calculate RH
         if self.hygrometer and data['dewpoint_temp'] is not None:
@@ -200,6 +234,15 @@ class Controller:
                 print(f"Set wet air flow to {wet_flow:.3f} L/min")
             else:
                 print("Failed to set wet air flow")
+
+    def set_chiller_temperature(self, temperature: float):
+        if self.chiller:
+            self.chiller.set_setpoint_temperature(temperature)
+            # Ensure control is started
+            self.chiller.start_control()
+            print(f"Set chiller temperature to {temperature:.2f} °C")
+        else:
+            print("Chiller not connected")
     
     def calculate_flow_rates_for_rh(self, target_rh: float, total_flow: float) -> Tuple[float, float]:
         # Assumes: Dry air stream is at 0% RH & Wet air stream is at 100% RH (saturated)
@@ -339,10 +382,6 @@ class Controller:
         self.logger.output_dir = Path(log_dir)
         self.logger.filename_prefix = log_prefix
         self.logger.output_dir.mkdir(parents=True, exist_ok=True)
-
-    def stop(self):
-        self.running = False
-        self.disconnect_devices()
 
     def warn_if_temp_delta(self, data: Dict[str, Optional[float]]):
         cell_temp = data.get('cell_temp')

@@ -23,6 +23,11 @@ CONFIG = {
     "hygrometer_enabled": True,
     "hygrometer_port": "COM9",  # Change to your port (e.g., 'COM5' on Windows)
 
+    # Julabo Chiller
+    "chiller_enabled": True,
+    "chiller_port": "COM8", # Change to your port
+    "chiller_baudrate": 4800,
+
     # Communication settings
     "mfc_baudrate": 9600,
     "hygrometer_baudrate": 19200,

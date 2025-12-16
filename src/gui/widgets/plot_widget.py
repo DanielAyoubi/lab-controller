@@ -31,6 +31,8 @@ class RealTimePlotWidget(QWidget):
         self.ambient_temp = deque(maxlen=max_points)
         self.cell_temp = deque(maxlen=max_points)
         self.dewpoint_temp = deque(maxlen=max_points)
+        self.chiller_temp = deque(maxlen=max_points)
+        self.chiller_setpoint = deque(maxlen=max_points)
         self.rh_device = deque(maxlen=max_points)
         self.rh_cell = deque(maxlen=max_points)
 
@@ -54,6 +56,8 @@ class RealTimePlotWidget(QWidget):
         self.ambient_temp = deque(self.ambient_temp, maxlen=max_points)
         self.cell_temp = deque(self.cell_temp, maxlen=max_points)
         self.dewpoint_temp = deque(self.dewpoint_temp, maxlen=max_points)
+        self.chiller_temp = deque(self.chiller_temp, maxlen=max_points)
+        self.chiller_setpoint = deque(self.chiller_setpoint, maxlen=max_points)
         self.rh_device = deque(self.rh_device, maxlen=max_points)
         self.rh_cell = deque(self.rh_cell, maxlen=max_points)
 
@@ -75,6 +79,8 @@ class RealTimePlotWidget(QWidget):
         self._lines['ambient'], = ax2.plot([], [], "g.-", label="Ambient")
         self._lines['cell'], = ax2.plot([], [], "r.-", label="Cell")
         self._lines['dewpoint'], = ax2.plot([], [], "c.-", label="Dewpoint")
+        self._lines['chiller'], = ax2.plot([], [], "b.-", label="Chiller")
+        self._lines['chiller_set'], = ax2.plot([], [], "b--", alpha=0.5, label="Chiller Set")
 
         ax2.set_title("Temperature", fontweight="bold", fontsize=10)
         ax2.set_ylabel("Temp (°C)", fontsize=9)
@@ -117,6 +123,8 @@ class RealTimePlotWidget(QWidget):
         self.ambient_temp.append(data.get("ambient_temp", np.nan))
         self.cell_temp.append(data.get("cell_temp", np.nan))
         self.dewpoint_temp.append(data.get("dewpoint_temp", np.nan))
+        self.chiller_temp.append(data.get("chiller_temp", np.nan))
+        self.chiller_setpoint.append(data.get("chiller_setpoint", np.nan))
         self.rh_device.append(data.get("rh_device", np.nan))
         self.rh_cell.append(data.get("rh_cell", np.nan))
 
@@ -137,6 +145,8 @@ class RealTimePlotWidget(QWidget):
         ambient_temp_data = np.array(list(self.ambient_temp), dtype=np.float64)
         cell_temp_data = np.array(list(self.cell_temp), dtype=np.float64)
         dewpoint_temp_data = np.array(list(self.dewpoint_temp), dtype=np.float64)
+        chiller_temp_data = np.array(list(self.chiller_temp), dtype=np.float64)
+        chiller_setpoint_data = np.array(list(self.chiller_setpoint), dtype=np.float64)
         rh_device_data = np.array(list(self.rh_device), dtype=np.float64)
         rh_cell_data = np.array(list(self.rh_cell), dtype=np.float64)
 
@@ -157,6 +167,8 @@ class RealTimePlotWidget(QWidget):
         update_line_filtered(self._lines['ambient'], ambient_temp_data)
         update_line_filtered(self._lines['cell'], cell_temp_data)
         update_line_filtered(self._lines['dewpoint'], dewpoint_temp_data)
+        update_line_filtered(self._lines['chiller'], chiller_temp_data)
+        update_line_filtered(self._lines['chiller_set'], chiller_setpoint_data)
         
         update_line_filtered(self._lines['rh_device'], rh_device_data)
         update_line_filtered(self._lines['rh_cell'], rh_cell_data)

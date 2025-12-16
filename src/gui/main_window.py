@@ -27,6 +27,7 @@ class MainWindow(QMainWindow):
         # Initialize Controller
         self.controller = Controller(self.config)
         self.experiment_worker: Optional[ExperimentWorker] = None
+        self.target_chiller_temp: Optional[float] = None
 
         # Setup UI
         self.central_widget = QWidget()
@@ -117,6 +118,29 @@ class MainWindow(QMainWindow):
         manual_group.setLayout(manual_layout)
         layout.addWidget(manual_group)
 
+        # Chiller Control
+        chiller_group = QGroupBox("Chiller Control")
+        chiller_layout = QFormLayout()
+        
+        self.spin_chiller_temp = QDoubleSpinBox()
+        self.spin_chiller_temp.setRange(-20, 100)
+        self.spin_chiller_temp.setSingleStep(0.1)
+        self.spin_chiller_temp.setSuffix(" °C")
+        
+        self.btn_set_chiller = QPushButton("Set Temperature")
+        self.btn_set_chiller.clicked.connect(self.set_chiller_temp)
+        self.btn_set_chiller.setEnabled(False)
+        
+        self.lbl_chiller_monitor = QLabel("Monitor: Inactive")
+        self.lbl_chiller_monitor.setStyleSheet("color: gray")
+        
+        chiller_layout.addRow("Set Temp:", self.spin_chiller_temp)
+        chiller_layout.addRow(self.btn_set_chiller)
+        chiller_layout.addRow(self.lbl_chiller_monitor)
+        
+        chiller_group.setLayout(chiller_layout)
+        layout.addWidget(chiller_group)
+
         # Experiment Control
         exp_group = QGroupBox("Automated Experiment")
         exp_layout = QFormLayout()
@@ -147,10 +171,12 @@ class MainWindow(QMainWindow):
         self.lbl_wet_flow = QLabel("0.00 L/min")
         self.lbl_temp = QLabel("0.00 °C")
         self.lbl_rh = QLabel("0.00 %")
+        self.lbl_chiller_read = QLabel("0.00 °C")
         
         readings_layout.addRow("Dry Flow:", self.lbl_dry_flow)
         readings_layout.addRow("Wet Flow:", self.lbl_wet_flow)
-        readings_layout.addRow("Temperature:", self.lbl_temp)
+        readings_layout.addRow("Cell Temp:", self.lbl_temp)
+        readings_layout.addRow("Chiller Temp:", self.lbl_chiller_read)
         readings_layout.addRow("Humidity:", self.lbl_rh)
         
         readings_group.setLayout(readings_layout)
@@ -176,6 +202,7 @@ class MainWindow(QMainWindow):
                     self.lbl_status.setStyleSheet("color: green")
                     self.btn_connect.setText("Disconnect")
                     self.btn_set_flow.setEnabled(True)
+                    self.btn_set_chiller.setEnabled(True)
                     self.btn_start_exp.setEnabled(True)
                 else:
                     QMessageBox.warning(self, "Connection Error", "Some devices failed to connect.")
@@ -184,6 +211,7 @@ class MainWindow(QMainWindow):
                     self.lbl_status.setStyleSheet("color: orange")
                     self.btn_connect.setText("Disconnect")
                     self.btn_set_flow.setEnabled(True)
+                    self.btn_set_chiller.setEnabled(True)
                     self.btn_start_exp.setEnabled(True)
             except Exception as e:
                 QMessageBox.critical(self, "Error", str(e))
@@ -193,6 +221,7 @@ class MainWindow(QMainWindow):
             self.lbl_status.setStyleSheet("color: red")
             self.btn_connect.setText("Connect Devices")
             self.btn_set_flow.setEnabled(False)
+            self.btn_set_chiller.setEnabled(False)
             self.btn_start_exp.setEnabled(False)
 
     def set_manual_flow(self):
@@ -202,6 +231,16 @@ class MainWindow(QMainWindow):
             self.controller.set_flow_rates(dry_flow=dry, wet_flow=wet)
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to set flow: {e}")
+
+    def set_chiller_temp(self):
+        temp = self.spin_chiller_temp.value()
+        try:
+            self.controller.set_chiller_temperature(temp)
+            self.target_chiller_temp = temp
+            self.lbl_chiller_monitor.setText("Monitor: Waiting...")
+            self.lbl_chiller_monitor.setStyleSheet("color: orange")
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to set chiller temperature: {e}")
 
     def toggle_experiment(self):
         if self.experiment_worker and self.experiment_worker.isRunning():
@@ -264,6 +303,23 @@ class MainWindow(QMainWindow):
             if rh is not None:
                 self.lbl_rh.setText(f"{rh:.2f} %")
 
+            # Update Chiller Temp
+            chiller_temp = data.get('chiller_temp')
+            if chiller_temp is not None:
+                self.lbl_chiller_read.setText(f"{chiller_temp:.2f} °C")
+
+            # Monitor Logic
+            if self.target_chiller_temp is not None:
+                cell_temp = data.get('cell_temp')
+                if cell_temp is not None:
+                    diff = abs(cell_temp - self.target_chiller_temp)
+                    if diff < 0.5: # Tolerance
+                        self.lbl_chiller_monitor.setText("Monitor: Target Reached")
+                        self.lbl_chiller_monitor.setStyleSheet("color: green")
+                        self.target_chiller_temp = None # Stop monitoring
+                    else:
+                        self.lbl_chiller_monitor.setText(f"Monitor: Diff {diff:.2f} °C")
+
             # Update Plot
             self.plot_widget.update_plot(data)
             
@@ -273,6 +329,5 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         if self.controller:
-            self.controller.stop()
             self.controller.disconnect_devices()
         event.accept()
