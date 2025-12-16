@@ -35,7 +35,7 @@ class Controller:
             'dry_flow', 'wet_flow', 
             'dry_flow_setpoint', 'wet_flow_setpoint',
             'cell_temp', 'ambient_temp', 'dewpoint_temp',
-            'relative_humidity', 'rh_device', 'rh_cell',
+            'relative_humidity', 'rh_device',
             'chiller_temp', 'chiller_setpoint'
         ]
         
@@ -151,7 +151,6 @@ class Controller:
             'cell_temp': None, 'ambient_temp': None, 'dewpoint_temp': None,
             'relative_humidity': None,
             'rh_device': None,
-            'rh_cell': None,
             'chiller_temp': None, 'chiller_setpoint': None
         }
         
@@ -191,26 +190,25 @@ class Controller:
 
         # Calculate RH
         if self.hygrometer and data['dewpoint_temp'] is not None:
-            # Calculate RH based on cell temperature
-            if data['cell_temp'] is not None:
-                data['rh_cell'] = self.hygrometer.compute_relative_humidity(
-                    data['dewpoint_temp'], data['cell_temp']
-                )
-            
-            # Determine which RH to use for control/logging as primary 'relative_humidity'
-            # For now, let's keep the logic based on config, or default to rh_cell if available?
-            # The user didn't specify which one controls the experiment, but implied we want to see both.
-            # Let's keep 'relative_humidity' as the one defined by 'rh_temperature_source' for backward compatibility
-            
             temp_source = self.config.get('rh_temperature_source', 'ambient')
-            if temp_source == 'cell' and data['rh_cell'] is not None:
-                data['relative_humidity'] = data['rh_cell']
-            elif data['rh_device'] is not None:
-                data['relative_humidity'] = data['rh_device']
-            elif data['ambient_temp'] is not None:
-                 data['relative_humidity'] = self.hygrometer.compute_relative_humidity(
-                    data['dewpoint_temp'], data['ambient_temp']
+            
+            # Determine the temperature to use for RH calculation
+            calc_temp = None
+            if temp_source == 'cell':
+                calc_temp = data.get('cell_temp')
+            elif temp_source == 'chiller':
+                calc_temp = data.get('chiller_temp')
+            else: # 'ambient' or default
+                calc_temp = data.get('ambient_temp')
+            
+            # Calculate RH if we have a valid temperature
+            if calc_temp is not None:
+                data['relative_humidity'] = self.hygrometer.compute_relative_humidity(
+                    data['dewpoint_temp'], calc_temp
                 )
+            elif data.get('rh_device') is not None:
+                 # Fallback to device RH if calculation is impossible
+                 data['relative_humidity'] = data['rh_device']
         
         return data
 

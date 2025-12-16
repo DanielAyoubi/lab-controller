@@ -33,12 +33,12 @@ CONFIG = {
     "hygrometer_baudrate": 19200,
 
     # Thermocouple (USB) settings
-    "t_probe_enabled": True,
+    "t_probe_enabled": False,
     "t_probe_vendor_id": 0x2177,
     "t_probe_product_id": 0x0004,
 
     # Relative humidity control settings
-    "rh_temperature_source": "cell",  # Options: "ambient" (DewMaster ambient temp), "cell" (Thermocouple cell temp)
+    "rh_temperature_source": "chiller",  # Options: "ambient" (DewMaster ambient temp), "cell" (Thermocouple cell temp), "chiller" (Chiller bath temp)
     
     # Automated experiment settings
     "experiment_direction": "up",       # "up" for 0% to 100% RH, "down" for 100% to 0% RH

@@ -34,7 +34,7 @@ class RealTimePlotWidget(QWidget):
         self.chiller_temp = deque(maxlen=max_points)
         self.chiller_setpoint = deque(maxlen=max_points)
         self.rh_device = deque(maxlen=max_points)
-        self.rh_cell = deque(maxlen=max_points)
+        self.relative_humidity = deque(maxlen=max_points)
 
         # Layout
         layout = QVBoxLayout()
@@ -59,7 +59,7 @@ class RealTimePlotWidget(QWidget):
         self.chiller_temp = deque(self.chiller_temp, maxlen=max_points)
         self.chiller_setpoint = deque(self.chiller_setpoint, maxlen=max_points)
         self.rh_device = deque(self.rh_device, maxlen=max_points)
-        self.rh_cell = deque(self.rh_cell, maxlen=max_points)
+        self.relative_humidity = deque(self.relative_humidity, maxlen=max_points)
 
     def _setup_plots(self):
         ax1, ax2, ax3 = self.canvas.axes
@@ -89,7 +89,7 @@ class RealTimePlotWidget(QWidget):
 
         # Plot 3: Humidity
         self._lines['rh_device'], = ax3.plot([], [], "m.-", label="Read RH")
-        self._lines['rh_cell'], = ax3.plot([], [], "b.-", label="Calc RH")
+        self._lines['relative_humidity'], = ax3.plot([], [], "b.-", label="Calc RH")
 
         ax3.set_title("Relative Humidity", fontweight="bold", fontsize=10)
         ax3.set_ylabel("RH (%)", fontsize=9)
@@ -126,7 +126,7 @@ class RealTimePlotWidget(QWidget):
         self.chiller_temp.append(data.get("chiller_temp", np.nan))
         self.chiller_setpoint.append(data.get("chiller_setpoint", np.nan))
         self.rh_device.append(data.get("rh_device", np.nan))
-        self.rh_cell.append(data.get("rh_cell", np.nan))
+        self.relative_humidity.append(data.get("relative_humidity", np.nan))
 
         self._redraw()
 
@@ -148,7 +148,7 @@ class RealTimePlotWidget(QWidget):
         chiller_temp_data = np.array(list(self.chiller_temp), dtype=np.float64)
         chiller_setpoint_data = np.array(list(self.chiller_setpoint), dtype=np.float64)
         rh_device_data = np.array(list(self.rh_device), dtype=np.float64)
-        rh_cell_data = np.array(list(self.rh_cell), dtype=np.float64)
+        relative_humidity_data = np.array(list(self.relative_humidity), dtype=np.float64)
 
         # Helper to update line with valid data only (to ensure lines connect)
         def update_line_filtered(line, y_data):
@@ -171,7 +171,7 @@ class RealTimePlotWidget(QWidget):
         update_line_filtered(self._lines['chiller_set'], chiller_setpoint_data)
         
         update_line_filtered(self._lines['rh_device'], rh_device_data)
-        update_line_filtered(self._lines['rh_cell'], rh_cell_data)
+        update_line_filtered(self._lines['relative_humidity'], relative_humidity_data)
 
         # Rescale axes
         for ax in self.canvas.axes:
