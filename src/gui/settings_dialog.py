@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QLineEdit, 
     QSpinBox, QDoubleSpinBox, QDialogButtonBox, 
-    QTabWidget, QWidget
+    QTabWidget, QWidget, QCheckBox
 )
 
 class SettingsDialog(QDialog):
@@ -43,17 +43,39 @@ class SettingsDialog(QDialog):
         self.max_plot_points.setValue(self.config.get("max_plot_points", 500))
         layout.addRow("Max Plot Points:", self.max_plot_points)
         
-        self.plot_update_interval = QSpinBox()
-        self.plot_update_interval.setRange(100, 10000)
-        self.plot_update_interval.setValue(self.config.get("plot_update_interval", 1000))
-        self.plot_update_interval.setSuffix(" ms")
-        layout.addRow("Plot Update Interval:", self.plot_update_interval)
+        self.control_interval = QSpinBox()
+        self.control_interval.setRange(100, 10000)
+        self.control_interval.setSingleStep(100)
+        # Value is in milliseconds
+        self.control_interval.setValue(int(self.config.get("control_interval", 5000)))
+        self.control_interval.setSuffix(" ms")
+        layout.addRow("Control Interval:", self.control_interval)
         
         self.tabs.addTab(tab, "General")
 
     def _create_devices_tab(self):
         tab = QWidget()
         layout = QFormLayout(tab)
+        # Enable / disable toggles
+        self.dry_mfc_enabled = QCheckBox("Dry MFC enabled")
+        self.dry_mfc_enabled.setChecked(bool(self.config.get("dry_mfc_enabled", True)))
+        layout.addRow(self.dry_mfc_enabled)
+
+        self.wet_mfc_enabled = QCheckBox("Wet MFC enabled")
+        self.wet_mfc_enabled.setChecked(bool(self.config.get("wet_mfc_enabled", True)))
+        layout.addRow(self.wet_mfc_enabled)
+
+        self.hygrometer_enabled = QCheckBox("Hygrometer enabled")
+        self.hygrometer_enabled.setChecked(bool(self.config.get("hygrometer_enabled", True)))
+        layout.addRow(self.hygrometer_enabled)
+
+        self.t_probe_enabled = QCheckBox("Thermocouple (t_probe) enabled")
+        self.t_probe_enabled.setChecked(bool(self.config.get("t_probe_enabled", False)))
+        layout.addRow(self.t_probe_enabled)
+
+        self.chiller_enabled = QCheckBox("Chiller enabled")
+        self.chiller_enabled.setChecked(bool(self.config.get("chiller_enabled", True)))
+        layout.addRow(self.chiller_enabled)
         
         self.dry_mfc_port = QLineEdit(self.config.get("dry_mfc_port", "COM6"))
         layout.addRow("Dry MFC Port:", self.dry_mfc_port)
@@ -92,11 +114,8 @@ class SettingsDialog(QDialog):
         self.max_flow.setSuffix(" L/min")
         layout.addRow("Max Flow:", self.max_flow)
         
-        self.control_interval = QDoubleSpinBox()
-        self.control_interval.setRange(0.1, 60.0)
-        self.control_interval.setValue(self.config.get("control_interval", 5.0))
-        self.control_interval.setSuffix(" s")
-        layout.addRow("Control Interval:", self.control_interval)
+        # The single update parameter `control_interval` (seconds)
+        # controls how often data are read and the GUI plot is refreshed.
         
         self.rh_tolerance = QDoubleSpinBox()
         self.rh_tolerance.setRange(0.1, 20.0)
@@ -123,7 +142,12 @@ class SettingsDialog(QDialog):
             "log_dir": self.log_dir.text(),
             "log_prefix": self.log_prefix.text(),
             "max_plot_points": self.max_plot_points.value(),
-            "plot_update_interval": self.plot_update_interval.value(),
+            "control_interval": int(self.control_interval.value()),
+            "dry_mfc_enabled": bool(self.dry_mfc_enabled.isChecked()),
+            "wet_mfc_enabled": bool(self.wet_mfc_enabled.isChecked()),
+            "hygrometer_enabled": bool(self.hygrometer_enabled.isChecked()),
+            "t_probe_enabled": bool(self.t_probe_enabled.isChecked()),
+            "chiller_enabled": bool(self.chiller_enabled.isChecked()),
             "dry_mfc_port": self.dry_mfc_port.text(),
             "wet_mfc_port": self.wet_mfc_port.text(),
             "hygrometer_port": self.hygrometer_port.text(),
@@ -131,7 +155,7 @@ class SettingsDialog(QDialog):
             "hygrometer_baudrate": self.hygrometer_baudrate.value(),
             "experiment_steps": self.experiment_steps.value(),
             "max_flow": self.max_flow.value(),
-            "control_interval": self.control_interval.value(),
+            # control interval (seconds)
             "rh_tolerance": self.rh_tolerance.value(),
             "stabilization_time": self.stabilization_time.value(),
             "stabilization_tolerance": self.stabilization_tolerance.value(),

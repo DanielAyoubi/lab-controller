@@ -2,11 +2,16 @@ import serial
 import time
 
 class JulaboChiller:
-    def __init__(self, port, baudrate=4800, timeout=1):
+    def __init__(self, port, baudrate=9600, timeout=1):
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.ser = None
+        self.connected = False
+
+    def __enter__(self):
+        self.connect()
+        return self
 
     def connect(self):
         try:
@@ -19,6 +24,7 @@ class JulaboChiller:
                 timeout=self.timeout
             )
             print(f"Connected to Chiller on {self.port} at {self.baudrate} baud.")
+            self.connected = True
             return True
         except serial.SerialException as e:
             print(f"Error connecting to Chiller serial port: {e}")
@@ -30,6 +36,9 @@ class JulaboChiller:
             self.ser.close()
             print("Chiller connection closed.")
             self.ser = None
+
+    def is_connected(self) -> bool:
+        return self.connected
 
     def send_command(self, command):
         # Appends Carriage Return (Hex 0D) and Line Feed (Hex 0A) as per.
@@ -60,13 +69,29 @@ class JulaboChiller:
         self.send_command("status")
         return self.read_response()
 
-    def get_actual_temperature(self):
+    def get_internal_temperature(self):
         self.send_command("in_pv_00")
         return self.read_response()
 
-    def get_setpoint_temperature(self):
-        self.send_command("in_sp_00")
+    def get_external_temperature(self):
+        self.send_command("in_pv_02")
         return self.read_response()
+
+    def get_current_temperature(self):
+        try:
+            temp = self.get_external_temperature()
+            return temp if temp is not None else self.get_internal_temperature()
+        except Exception as e:
+            print(f"Error getting current temperature: {e}")
+        return None
+
+    def get_setpoint_temperature(self):
+        try:
+            self.send_command("in_sp_00")
+            return self.read_response()
+        except Exception as e:
+            print(f"Error reading setpoint temperature: {e}")
+            return None
 
     def set_setpoint_temperature(self, temperature):
         # Ensure format matches "OUT_SP_00_55.5" structure

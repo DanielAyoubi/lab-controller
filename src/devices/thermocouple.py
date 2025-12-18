@@ -54,6 +54,10 @@ class Thermocouple:
         self._cached_temperature: Optional[float] = None
         self._cache_timestamp: float = 0.0  # Use time.time() for better performance
 
+    def __enter__(self):
+        self.connect()
+        return self
+
     def connect(self) -> bool:
         try:
             # Find libusb library from libusb-package to avoid "No backend available" on Windows
@@ -113,6 +117,9 @@ class Thermocouple:
             self._connected = False
             self._claimed_interface = None
             print("Thermocouple disconnected")
+
+    def is_connected(self) -> bool:
+        return self._connected
 
     def get_temperature(self) -> Optional[float]:
         if not self._connected and not self.connect():

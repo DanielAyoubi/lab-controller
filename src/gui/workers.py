@@ -1,5 +1,4 @@
 from PyQt6.QtCore import QThread, pyqtSignal
-import time
 from typing import Dict, Any
 
 class ExperimentWorker(QThread):
@@ -25,13 +24,19 @@ class ExperimentWorker(QThread):
             # For now, we will call the blocking function. 
             # Note: This will block this thread, which is fine.
             # But we can't easily stop it unless we modify the controller.
-            
+
+            # Use `control_interval` (seconds) from config as the control interval
+            try:
+                control_interval_sec = float(self.config.get('control_interval', 1.0))
+            except Exception:
+                control_interval_sec = 1.0
+
             self.controller.run_automated_experiment(
                 direction=self.config.get('experiment_direction', 'up'),
                 steps=self.config.get('experiment_steps', 10),
                 duration=self.config.get('experiment_duration', 60.0),
                 max_flow=self.config.get('max_flow', 2.0),
-                control_interval=self.config.get('control_interval', 5.0),
+                control_interval=control_interval_sec,
                 rh_tolerance=self.config.get('rh_tolerance', 5.0),
                 stabilization_time=self.config.get('stabilization_time', 60.0),
                 stabilization_tolerance=self.config.get('stabilization_tolerance', 2.0),

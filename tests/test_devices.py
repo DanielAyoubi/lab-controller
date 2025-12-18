@@ -3,7 +3,7 @@ from unittest.mock import MagicMock, patch
 import serial
 import minimalmodbus
 import usb.core
-from src.devices.dewmaster import DewMaster
+from src.devices.hygrometer import DewMaster
 from src.devices.vogtlin_mfc import VogtlinMFC
 from src.devices.thermocouple import Thermocouple
 

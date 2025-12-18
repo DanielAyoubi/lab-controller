@@ -7,11 +7,6 @@ from typing import Dict, List, Optional
 
 class DataLogger:
     def __init__(self, output_dir: str = "data", filename_prefix: str = "nsim_log"):
-        """
-        Args:
-            output_dir: Directory to store log files
-            filename_prefix: Prefix for log filenames
-        """
         self.output_dir = Path(output_dir)
         self.filename_prefix = filename_prefix
         self.current_file: Optional[str] = None
@@ -23,23 +18,11 @@ class DataLogger:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def _generate_filename(self) -> str:
-        """
-        Generate a filename with timestamp.
-
-        Returns:
-            Full path to log file
-        """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{self.filename_prefix}_{timestamp}.csv"
         return str(self.output_dir / filename)
 
     def start_new_log(self, fieldnames: List[str]):
-        """
-        Start a new log file with specified fields.
-
-        Args:
-            fieldnames: List of column names for the CSV
-        """
         # Close existing file handle if open
         self.close()
 
@@ -56,12 +39,6 @@ class DataLogger:
         print(f"Started new log file: {self.current_file}")
 
     def log_data(self, data: Dict[str, any]):
-        """
-        Log a data point to the current log file.
-
-        Args:
-            data: Dictionary of data to log (keys must match fieldnames)
-        """
         if not self._csv_writer or not self.fieldnames:
             raise ValueError("No log file started. Call start_new_log() first.")
 
@@ -73,15 +50,6 @@ class DataLogger:
         self._csv_writer.writerow(data)
 
     def read_log(self, filename: Optional[str] = None) -> List[Dict[str, str]]:
-        """
-        Read data from a log file.
-
-        Args:
-            filename: Path to log file (uses current file if None)
-
-        Returns:
-            List of dictionaries containing log data
-        """
         file_to_read = filename or self.current_file
 
         if not file_to_read or not os.path.exists(file_to_read):
@@ -97,28 +65,13 @@ class DataLogger:
         return data
 
     def get_current_filename(self) -> Optional[str]:
-        """
-        Get the path to the current log file.
-
-        Returns:
-            Path to current log file or None
-        """
         return self.current_file
 
     def list_log_files(self) -> List[str]:
-        """
-        List all log files in the output directory.
-
-        Returns:
-            List of log file paths
-        """
         pattern = f"{self.filename_prefix}_*.csv"
         return sorted([str(f) for f in self.output_dir.glob(pattern)])
 
     def close(self):
-        """
-        Close the current log file handle if open.
-        """
         if self._file_handle:
             try:
                 self._file_handle.flush()
@@ -130,10 +83,7 @@ class DataLogger:
                 self._csv_writer = None
 
     def __del__(self):
-        """
-        Ensure file handle is closed on deletion.
-        """
         try:
             self.close()
         except Exception:
-            pass  # Prevent exceptions during garbage collection
+            pass 

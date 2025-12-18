@@ -1,14 +1,14 @@
-import sys
 import os
 import importlib.util
-from typing import Dict, Optional
+from typing import Optional
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QLabel, QGroupBox, QDoubleSpinBox, 
-    QFormLayout, QMessageBox, QTabWidget, QComboBox
+    QFormLayout, QMessageBox, QComboBox
 )
-from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtWidgets import QTextEdit
+from PyQt6.QtCore import QTimer
 
 from src.devices.controller import Controller
 from src.gui.widgets.plot_widget import RealTimePlotWidget
@@ -28,6 +28,8 @@ class MainWindow(QMainWindow):
         self.controller = Controller(self.config)
         self.experiment_worker: Optional[ExperimentWorker] = None
         self.target_chiller_temp: Optional[float] = None
+        # Index of last consumed log message from controller
+        self._log_index = 0
 
         # Setup UI
         self.central_widget = QWidget()
@@ -37,10 +39,11 @@ class MainWindow(QMainWindow):
         self._create_left_panel()
         self._create_right_panel()
 
-        # Timer for updates
+        # Timer for periodic polling (read sensors, then update plot)
         self.update_timer = QTimer()
-        self.update_timer.timeout.connect(self.update_readings)
-        self.update_timer.start(1000)  # 1 second update
+        self.update_timer.timeout.connect(self.poll_and_update)
+        # `control_interval` in config is in seconds; QTimer needs milliseconds
+        self.update_timer.start(int(self.config.get('control_interval', 5000)))
 
     def load_config(self, config_path: str) -> dict:
         if not os.path.exists(config_path):
@@ -69,13 +72,32 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'plot_widget'):
                 self.plot_widget.set_max_points(self.config.get('max_plot_points', 500))
             
-            # Update timer interval
-            self.update_timer.setInterval(self.config.get('plot_update_interval', 1000))
+            # Update timer interval (convert seconds -> milliseconds)
+            self.update_timer.setInterval(int(self.config.get('control_interval', 5000)))
             
             # If ports changed, maybe warn user to reconnect
             QMessageBox.information(self, "Settings Updated", 
                                     "Settings have been updated. \n"
                                     "If you changed device ports, please disconnect and reconnect.")
+            
+            # Refresh device labels to reflect enabled/disabled settings
+            try:
+                for key, label in self.device_labels.items():
+                    enabled = bool(self.config.get(f"{key}_enabled", True))
+                    if not enabled:
+                        label.setText("Disabled")
+                        label.setStyleSheet("color: gray")
+                    else:
+                        # If controller has the device object and overall connected, show Connected
+                        dev_obj = getattr(self.controller, key, None)
+                        if dev_obj and self.controller.is_connected():
+                            label.setText("Connected")
+                            label.setStyleSheet("color: green")
+                        else:
+                            label.setText("Disconnected")
+                            label.setStyleSheet("color: red")
+            except Exception:
+                pass
 
     def _create_left_panel(self):
         panel = QWidget()
@@ -93,6 +115,45 @@ class MainWindow(QMainWindow):
         conn_layout.addWidget(self.btn_connect)
         conn_group.setLayout(conn_layout)
         layout.addWidget(conn_group)
+
+        # Device Status (per-device labels)
+        device_group = QGroupBox("Device Status")
+        device_layout = QFormLayout()
+
+        # Create labels for known devices
+        self.device_labels = {}
+        devices = [
+            ("dry_mfc", "Dry Air MFC"),
+            ("wet_mfc", "Wet Air MFC"),
+            ("hygrometer", "Hygrometer"),
+            ("t_probe", "Thermocouple"),
+            ("chiller", "Julabo Chiller"),
+        ]
+        for key, name in devices:
+            lbl = QLabel("Unknown")
+            lbl.setStyleSheet("color: gray")
+            self.device_labels[key] = lbl
+            # Show Disabled if the device is not enabled in config, otherwise show Disconnected
+            if self.config.get(f"{key}_enabled", False):
+                lbl.setText("Disconnected")
+                lbl.setStyleSheet("color: red")
+            else:
+                lbl.setText("Disabled")
+                lbl.setStyleSheet("color: gray")
+            device_layout.addRow(name + ":", lbl)
+
+        device_group.setLayout(device_layout)
+        layout.addWidget(device_group)
+
+        # Connection Log
+        log_group = QGroupBox("Connection Log")
+        log_layout = QVBoxLayout()
+        self.log_widget = QTextEdit()
+        self.log_widget.setReadOnly(True)
+        self.log_widget.setFixedHeight(140)
+        log_layout.addWidget(self.log_widget)
+        log_group.setLayout(log_layout)
+        layout.addWidget(log_group)
 
         # Manual Control
         manual_group = QGroupBox("Manual Control")
@@ -197,22 +258,58 @@ class MainWindow(QMainWindow):
     def toggle_connection(self):
         if self.btn_connect.text() == "Connect Devices":
             try:
-                if self.controller.connect_devices():
+                results = self.controller.connect_devices()
+
+                # Update per-device labels
+                any_connected = False
+                any_failed = False
+                for key, label in self.device_labels.items():
+                    if key in results:
+                        if results[key]:
+                            label.setText("Connected")
+                            label.setStyleSheet("color: green")
+                            any_connected = True
+                        else:
+                            label.setText("Failed")
+                            label.setStyleSheet("color: red")
+                            any_failed = True
+                    else:
+                        # If device explicitly disabled in config, mark Disabled
+                        if not self.config.get(f"{key}_enabled", True):
+                            label.setText("Disabled")
+                            label.setStyleSheet("color: gray")
+                        else:
+                            label.setText("Not configured")
+                            label.setStyleSheet("color: gray")
+
+                # Populate connection log
+                try:
+                    self.log_widget.clear()
+                    msgs = getattr(self.controller, 'connect_messages', [])
+                    for line in msgs:
+                        self.log_widget.append(line)
+                    self._log_index = len(msgs)
+                except Exception:
+                    pass
+
+                # Update overall status and buttons
+                if any_connected and not any_failed:
                     self.lbl_status.setText("Status: Connected")
                     self.lbl_status.setStyleSheet("color: green")
                     self.btn_connect.setText("Disconnect")
                     self.btn_set_flow.setEnabled(True)
                     self.btn_set_chiller.setEnabled(True)
                     self.btn_start_exp.setEnabled(True)
-                else:
-                    QMessageBox.warning(self, "Connection Error", "Some devices failed to connect.")
-                    # Still allow partial functionality?
+                elif any_connected:
                     self.lbl_status.setText("Status: Partial Connection")
                     self.lbl_status.setStyleSheet("color: orange")
                     self.btn_connect.setText("Disconnect")
                     self.btn_set_flow.setEnabled(True)
                     self.btn_set_chiller.setEnabled(True)
                     self.btn_start_exp.setEnabled(True)
+                else:
+                    self.lbl_status.setText("Status: Disconnected")
+                    self.lbl_status.setStyleSheet("color: red")
             except Exception as e:
                 QMessageBox.critical(self, "Error", str(e))
         else:
@@ -223,6 +320,20 @@ class MainWindow(QMainWindow):
             self.btn_set_flow.setEnabled(False)
             self.btn_set_chiller.setEnabled(False)
             self.btn_start_exp.setEnabled(False)
+            # Clear device labels
+            if hasattr(self, 'device_labels'):
+                for key, lbl in self.device_labels.items():
+                    if not self.config.get(f"{key}_enabled", True):
+                        lbl.setText("Disabled")
+                        lbl.setStyleSheet("color: gray")
+                    else:
+                        lbl.setText("Disconnected")
+                        lbl.setStyleSheet("color: red")
+            # Update log widget
+            try:
+                self.log_widget.append("Disconnected all devices.")
+            except Exception:
+                pass
 
     def set_manual_flow(self):
         dry = self.spin_dry.value()
@@ -249,7 +360,7 @@ class MainWindow(QMainWindow):
             self.experiment_worker.wait()
             self.btn_start_exp.setText("Start Experiment")
             self.btn_set_flow.setEnabled(True)
-            self.update_timer.start(1000)
+            self.update_timer.start(int(self.config.get('control_interval', 5000)))
         else:
             # Start experiment
             # Update config with UI values
@@ -260,6 +371,7 @@ class MainWindow(QMainWindow):
             self.experiment_worker.finished.connect(self.on_experiment_finished)
             self.experiment_worker.error.connect(self.on_experiment_error)
             self.experiment_worker.data_ready.connect(self.update_readings)
+            self.experiment_worker.progress.connect(lambda m: self.log_widget.append(f"[Worker] {m}"))
             self.experiment_worker.start()
             
             self.update_timer.stop()
@@ -268,16 +380,24 @@ class MainWindow(QMainWindow):
             self.btn_set_flow.setEnabled(False)
 
     def on_experiment_finished(self):
-        self.update_timer.start(1000)
+        self.update_timer.start(int(self.config.get('control_interval', 5000)))
         self.btn_start_exp.setText("Start Experiment")
         self.btn_set_flow.setEnabled(True)
         QMessageBox.information(self, "Experiment", "Experiment Completed")
 
     def on_experiment_error(self, msg):
-        self.update_timer.start(1000)
+        self.update_timer.start(int(self.config.get('control_interval', 5000)))
         self.btn_start_exp.setText("Start Experiment")
         self.btn_set_flow.setEnabled(True)
         QMessageBox.critical(self, "Experiment Error", msg)
+
+    def poll_and_update(self):
+        try:
+            if self.controller.is_connected():
+                data = self.controller.read_all_sensors()
+                self.update_readings(data)
+        except Exception:
+            pass
 
     def update_readings(self, data=None):
         # Only read if connected or at least initialized
@@ -322,6 +442,16 @@ class MainWindow(QMainWindow):
 
             # Update Plot
             self.plot_widget.update_plot(data)
+            
+            # Append any new controller messages to log widget
+            try:
+                msgs = getattr(self.controller, 'connect_messages', [])
+                if len(msgs) > self._log_index:
+                    for m in msgs[self._log_index:]:
+                        self.log_widget.append(m)
+                    self._log_index = len(msgs)
+            except Exception:
+                pass
             
         except Exception:
             # Don't spam errors

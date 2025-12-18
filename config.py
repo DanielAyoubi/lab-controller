@@ -5,7 +5,6 @@ CONFIG = {
 
     # Plotting settings
     "max_plot_points": 500,  # Maximum number of points to display
-    "plot_update_interval": 1000,  # Update interval in milliseconds
 
     # Serial port settings
 
@@ -26,10 +25,10 @@ CONFIG = {
     # Julabo Chiller
     "chiller_enabled": True,
     "chiller_port": "COM8", # Change to your port
-    "chiller_baudrate": 4800,
 
     # Communication settings
     "mfc_baudrate": 9600,
+    "chiller_baudrate": 9600,
     "hygrometer_baudrate": 19200,
 
     # Thermocouple (USB) settings
@@ -38,17 +37,17 @@ CONFIG = {
     "t_probe_product_id": 0x0004,
 
     # Relative humidity control settings
-    "rh_temperature_source": "chiller",  # Options: "ambient" (DewMaster ambient temp), "cell" (Thermocouple cell temp), "chiller" (Chiller bath temp)
+    "rh_temperature_source": "chiller",  # Options: "hygrometer" (DewMaster hygrometer ambient temp), "thermocouple" (Thermocouple cell temp), "chiller" (Chiller bath temp)
     
     # Automated experiment settings
     "experiment_direction": "up",       # "up" for 0% to 100% RH, "down" for 100% to 0% RH
     "experiment_steps": 10,             # Number of steps between start and end RH
     "experiment_duration": 60.0,        # Total experiment duration in minutes
-    "max_flow": 2.0,                   # Maximum/target total flow rate (dry + wet) in L/min
-    "control_interval": 5.0,           # Time between control updates in seconds
+    "max_flow": 1.0,                   # Maximum/target total flow rate (dry + wet) in L/min
+    "control_interval": 5000,  # Update interval in seconds
     "rh_tolerance": 5.0,               # Maximum allowed deviation from target RH before adjustment (%)
     
     # Experiment stabilization settings
     "stabilization_time": 60.0,        # Maximum time to stabilize flows at each step (seconds)
-    "stabilization_tolerance": 2.0,    # RH tolerance for considering flows stable (%)
+    "stabilization_tolerance": 5.0,    # RH tolerance for considering flows stable (%)
 }

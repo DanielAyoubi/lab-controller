@@ -1,10 +1,10 @@
-import time
+import time, math
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Tuple, Callable
 
 from src.devices.vogtlin_mfc import VogtlinMFC
-from src.devices.dewmaster import DewMaster
+from src.devices.hygrometer import Hygrometer
 from src.devices.thermocouple import Thermocouple
 from src.devices.chiller import JulaboChiller
 from src.logging.data_logger import DataLogger
@@ -15,130 +15,112 @@ class Controller:
         self.config = config
         self.running = False
         self.connected = False
-        
+        # Messages produced during connect/disconnect attempts
+        self.connect_messages = []
+
         # Initialize devices
         self.dry_mfc: Optional[VogtlinMFC] = None
         self.wet_mfc: Optional[VogtlinMFC] = None
-        self.hygrometer: Optional[DewMaster] = None
+        self.hygrometer: Optional[Hygrometer] = None
         self.t_probe: Optional[Thermocouple] = None
         self.chiller: Optional[JulaboChiller] = None
         
         # Initialize logger
         self.logger = DataLogger(
-            output_dir=config.get('log_dir', 'data'),
-            filename_prefix=config.get('log_prefix', 'nsim_log')
+            output_dir=self.config.get('log_dir', 'data'),
+            filename_prefix=self.config.get('log_prefix', 'nsim_log')
         )
-        
+
         # Data fields for logging
         self.log_fields = [
             'timestamp',
             'dry_flow', 'wet_flow', 
             'dry_flow_setpoint', 'wet_flow_setpoint',
-            'cell_temp', 'ambient_temp', 'dewpoint_temp',
+            'hygrometer_temp', 'dewpoint_temp',
             'relative_humidity', 'rh_device',
             'chiller_temp', 'chiller_setpoint'
         ]
+
+    def add_message(self, msg: str):
+        ts = datetime.now().isoformat(timespec='seconds')
+        entry = f"[{ts}] {msg}"
+        try:
+            self.connect_messages.append(entry)
+        except Exception:
+            pass
+        
         
     def is_connected(self) -> bool:
         return self.connected
         
-    def connect_devices(self) -> bool:
-        success = True
-        
-        # Connect dry air MFC
-        if self.config.get('dry_mfc_enabled', True) and 'dry_mfc_port' in self.config:
-            print(f"Connecting to Dry Air MFC on {self.config['dry_mfc_port']}...")
+    def connect_devices(self) -> Dict[str, bool]:
+        results: Dict[str, bool] = {}
+
+        # Dry air MFC
+        if 'dry_mfc_port' in self.config and self.config.get('dry_mfc_enabled', True):
             self.dry_mfc = VogtlinMFC(
                 port=self.config['dry_mfc_port'],
                 address=self.config.get('dry_mfc_address', 1),
                 name="Dry Air MFC"
             )
-            if not self.dry_mfc.connect():
-                print("Failed to connect to Dry Air MFC")
-                success = False
-            else:
-                print("Dry Air MFC connected successfully")
-        
-        # Connect wet air MFC
-        if self.config.get('wet_mfc_enabled', True) and 'wet_mfc_port' in self.config:
-            print(f"Connecting to Wet Air MFC on {self.config['wet_mfc_port']}...")
+            results['dry_mfc'] = self.dry_mfc.is_connected()
+
+        # Wet air MFC
+        if 'wet_mfc_port' in self.config and self.config.get('wet_mfc_enabled', True):
             self.wet_mfc = VogtlinMFC(
                 port=self.config['wet_mfc_port'],
                 address=self.config.get('wet_mfc_address', 2),
                 name="Wet Air MFC"
             )
-            if not self.wet_mfc.connect():
-                print("Failed to connect to Wet Air MFC")
-                success = False
-            else:
-                print("Wet Air MFC connected successfully")
-        
-        # Connect hygrometer
-        if self.config.get('hygrometer_enabled', True) and 'hygrometer_port' in self.config:
-            print(f"Connecting to DewMaster Hygrometer on {self.config['hygrometer_port']}...")
-            self.hygrometer = DewMaster(
+            results['wet_mfc'] = self.wet_mfc.is_connected()
+
+        # Hygrometer (Hygrometer)
+        if 'hygrometer_port' in self.config and self.config.get('hygrometer_enabled', True):
+            self.hygrometer = Hygrometer(
                 port=self.config['hygrometer_port'],
                 baudrate=self.config.get('hygrometer_baudrate', 9600)
             )
-            if not self.hygrometer.connect():
-                print("Failed to connect to DewMaster Hygrometer")
-                success = False
-            else:
-                print("DewMaster Hygrometer connected successfully")
+            results['hygrometer'] = self.hygrometer.is_connected()
 
-        # Connect Temperature Probe
-        if self.config.get('t_probe_enabled'):
+        # Temperature Probe (USB thermocouple) — attempt if either vendor/product IDs present or enabled flag
+        if ('t_probe_vendor_id' in self.config and 't_probe_product_id' in self.config) and self.config.get('t_probe_enabled'):
             vendor_id = self.config.get('t_probe_vendor_id', Thermocouple.DEFAULT_VENDOR_ID)
             product_id = self.config.get('t_probe_product_id', Thermocouple.DEFAULT_PRODUCT_ID)
-            print(f"Connecting to Temperature Probe (USB) [VID=0x{vendor_id:04X}, PID=0x{product_id:04X}]...")
             self.t_probe = Thermocouple(
                 vendor_id=vendor_id,
                 product_id=product_id,
             )
-            if not self.t_probe.connect():
-                print("Failed to connect to Temperature Probe")
-                success = False
-            else:
-                print("Temperature Probe connected successfully")
+            results['t_probe'] = self.t_probe.is_connected()
 
-        # Connect Chiller
-        if self.config.get('chiller_enabled', False) and 'chiller_port' in self.config:
-            print(f"Connecting to Julabo Chiller on {self.config['chiller_port']}...")
+        # Chiller
+        if 'chiller_port' in self.config and self.config.get('chiller_enabled', True):
             self.chiller = JulaboChiller(
                 port=self.config['chiller_port'],
-                baudrate=self.config.get('chiller_baudrate', 4800)
+                baudrate=self.config.get('chiller_baudrate', 9600)
             )
-            if not self.chiller.connect():
-                print("Failed to connect to Julabo Chiller")
-                success = False
-            else:
-                print("Julabo Chiller connected successfully")
-        
-        self.connected = success
-        return success
+            results['chiller'] = self.chiller.is_connected()
+
+        # Determine overall connected status (at least one device)
+        self.connected = any(results.values()) if results else False
+        return results
     
     def disconnect_devices(self):
         print("\nDisconnecting devices...")
         
         if self.dry_mfc:
             self.dry_mfc.disconnect()
-            print("Dry Air MFC disconnected")
         
         if self.wet_mfc:
             self.wet_mfc.disconnect()
-            print("Wet Air MFC disconnected")
         
         if self.hygrometer:
             self.hygrometer.disconnect()
-            print("DewMaster Hygrometer disconnected")
 
         if self.t_probe:
             self.t_probe.disconnect()
-            print("Temperature Probe disconnected")
 
         if self.chiller:
             self.chiller.disconnect()
-            print("Julabo Chiller disconnected")
             
         self.running = False
         self.connected = False
@@ -148,7 +130,7 @@ class Controller:
             'timestamp': datetime.now().isoformat(),
             'dry_flow': None, 'wet_flow': None,
             'dry_flow_setpoint': None, 'wet_flow_setpoint': None,
-            'cell_temp': None, 'ambient_temp': None, 'dewpoint_temp': None,
+            'cell_temp': None, 'hygrometer_temp': None, 'dewpoint_temp': None,
             'relative_humidity': None,
             'rh_device': None,
             'chiller_temp': None, 'chiller_setpoint': None
@@ -156,89 +138,114 @@ class Controller:
         
         # Read dry MFC
         if self.dry_mfc:
-            data['dry_flow'] = self.dry_mfc.get_flow()
-            data['dry_flow_setpoint'] = self.dry_mfc.get_setpoint()
+            try:
+                data['dry_flow'] = self.dry_mfc.get_flow()
+                data['dry_flow_setpoint'] = self.dry_mfc.get_setpoint()
+            except Exception as e:
+                self.add_message(f"Error reading dry MFC: {e}")
         
         # Read wet MFC
         if self.wet_mfc:
-            data['wet_flow'] = self.wet_mfc.get_flow()
-            data['wet_flow_setpoint'] = self.wet_mfc.get_setpoint()
+            try:
+                data['wet_flow'] = self.wet_mfc.get_flow()
+                data['wet_flow_setpoint'] = self.wet_mfc.get_setpoint()
+            except Exception as e:
+                self.add_message(f"Error reading wet MFC: {e}")
         
         # Read hygrometer
         if self.hygrometer:
-            readings = self.hygrometer.get_readings()
-            if readings:
-                data['ambient_temp'] = readings.get('ambient_temp')
-                data['dewpoint_temp'] = readings.get('dewpoint_temp')
-                data['rh_device'] = readings.get('relative_humidity_device')
+            try:
+                readings = self.hygrometer.get_readings()
+                if readings:
+                    # Driver returns 'ambient_temp' for ambient/hygrometer temp
+                    data['hygrometer_temp'] = readings.get('hygrometer_temp') or readings.get('ambient_temp')
+                    data['dewpoint_temp'] = readings.get('dewpoint_temp')
+                    data['rh_device'] = readings.get('relative_humidity_device') or readings.get('relative_humidity')
+            except Exception as e:
+                self.add_message(f"Error reading hygrometer: {e}")
 
         # Read thermocouple
         if self.t_probe:
-            data['cell_temp'] = self.t_probe.get_temperature()
+            try:
+                data['thermocouple_temp'] = self.t_probe.get_temperature()
+            except Exception as e:
+                self.add_message(f"Error reading thermocouple: {e}")
 
         # Read chiller
         if self.chiller:
             try:
-                temp = self.chiller.get_actual_temperature()
-                if temp:
-                    data['chiller_temp'] = float(temp)
-                sp = self.chiller.get_setpoint_temperature()
-                if sp:
-                    data['chiller_setpoint'] = float(sp)
-            except ValueError:
-                pass
+                data['chiller_temp'] = self.chiller.get_current_temperature()
+                data['chiller_setpoint'] = self.chiller.get_setpoint_temperature()
+            except Exception as e:
+                self.add_message(f"Error reading chiller: {e}")
 
         # Calculate RH
         if self.hygrometer and data['dewpoint_temp'] is not None:
-            temp_source = self.config.get('rh_temperature_source', 'ambient')
+            temp_source = self.config.get('rh_temperature_source', 'hygrometer')
             
             # Determine the temperature to use for RH calculation
             calc_temp = None
-            if temp_source == 'cell':
-                calc_temp = data.get('cell_temp')
+            if temp_source == 'thermocouple':
+                calc_temp = data.get('thermocouple_temp')
             elif temp_source == 'chiller':
                 calc_temp = data.get('chiller_temp')
-            else: # 'ambient' or default
-                calc_temp = data.get('ambient_temp')
+            else: # 'hygrometer' or default
+                calc_temp = data.get('hygrometer_temp')
             
             # Calculate RH if we have a valid temperature
             if calc_temp is not None:
-                data['relative_humidity'] = self.hygrometer.compute_relative_humidity(
-                    data['dewpoint_temp'], calc_temp
-                )
-            elif data.get('rh_device') is not None:
-                 # Fallback to device RH if calculation is impossible
-                 data['relative_humidity'] = data['rh_device']
+                try:
+                    data['relative_humidity'] = self.hygrometer.compute_relative_humidity(
+                        dp=data['dewpoint_temp'], t=calc_temp
+                    )
+                except Exception as e:
+                    self.add_message(f"Error computing relative humidity: {e}")
+            else:
+                self.add_message("RH calculation skipped: no valid temperature available for RH computation")
         
         return data
 
     
     def set_flow_rates(self, dry_flow: Optional[float] = None, wet_flow: Optional[float] = None, 
-                       max_flow: Optional[float] = None):
+                       max_flow: Optional[float] = None, ramp_flow=True):
         # Validate total flow doesn't exceed maximum
         if max_flow is not None:
             total = (dry_flow or 0) + (wet_flow or 0)
             if total > max_flow:
-                raise ValueError(f"Total flow rate {total:.2f} L/min exceeds maximum {max_flow:.2f} L/min")
-        
+                self.add_message(f"Requested total flow {total:.2f} exceeds maximum {max_flow:.2f}. Aborting set.")
+                return False
+
+        success = True
         if dry_flow is not None and self.dry_mfc:
-            if self.dry_mfc.set_flow(dry_flow):
-                print(f"Set dry air flow to {dry_flow:.3f} L/min")
-            else:
-                print("Failed to set dry air flow")
-        
+            try:
+                if self.dry_mfc.set_flow(dry_flow):
+                    self.add_message(f"Dry MFC setpoint set to {dry_flow:.3f}")
+                else:
+                    self.add_message("Failed to set dry MFC flow")
+                    success = False
+            except Exception as e:
+                self.add_message(f"Error setting dry MFC: {e}")
+                success = False
+
         if wet_flow is not None and self.wet_mfc:
-            if self.wet_mfc.set_flow(wet_flow):
-                print(f"Set wet air flow to {wet_flow:.3f} L/min")
-            else:
-                print("Failed to set wet air flow")
+            try:
+                if self.wet_mfc.set_flow(wet_flow):
+                    self.add_message(f"Wet MFC setpoint set to {wet_flow:.3f}")
+                else:
+                    self.add_message("Failed to set wet MFC flow")
+                    success = False
+            except Exception as e:
+                self.add_message(f"Error setting wet MFC: {e}")
+                success = False
+
+        return success
 
     def set_chiller_temperature(self, temperature: float):
         if self.chiller:
             self.chiller.set_setpoint_temperature(temperature)
             # Ensure control is started
             self.chiller.start_control()
-            print(f"Set chiller temperature to {temperature:.2f} °C")
+            self.add_message(f"Chiller setpoint set to {temperature:.2f} °C")
         else:
             print("Chiller not connected")
     
@@ -253,41 +260,50 @@ class Controller:
                                on_data: Optional[Callable[[Dict], None]] = None, stabilization_tolerance: float = 2.0,
                                stabilization_time: float = 60.0) -> Tuple[bool, float, float]:
         # Stabilize flow rates to achieve stable RH within tolerance of target.
-        print(f"    Stabilizing flows for {target_rh:.1f}% RH")
+        self.add_message(f"Stabilizing flows for {target_rh:.1f}% RH")
         
         # 1. Calculate initial flows
         dry_flow, wet_flow = self.calculate_flow_rates_for_rh(target_rh, max_flow)
         
-        # 2. Set flows directly (No ramping)
-        print(f"    Setting flows to Dry: {dry_flow:.3f}, Wet: {wet_flow:.3f}...")
+        # 2. Set flows directly
+        self.add_message(f"Setting flows to Dry: {dry_flow:.3f}, Wet: {wet_flow:.3f}")
         self.set_flow_rates(dry_flow=dry_flow, wet_flow=wet_flow, max_flow=max_flow)
         
         # 3. Equilibrate
-        print(f"    Equilibrating for {stabilization_time} seconds...")
-        
+        self.add_message(f"Equilibrating for {stabilization_time} seconds")
         start_time = time.time()
         last_data = {}
         
         while (time.time() - start_time) < stabilization_time and self.running:
             cycle_start = time.time()
-            
+
             # Read sensors
-            last_data = self.read_all_sensors()
-            
-            # Log and Plot
-            self.logger.log_data(last_data)
-            
-            # Callback
+            try:
+                last_data = self.read_all_sensors()
+            except Exception as e:
+                self.add_message(f"Error reading sensors during stabilization: {e}")
+                last_data = {}
+
+            # Log and Plot (protect logger)
+            try:
+                self.logger.log_data(last_data)
+            except Exception as e:
+                self.add_message(f"Logger error during stabilization: {e}")
+
+            # Callback (protect user callback)
             if on_data:
-                on_data(last_data)
-            
+                try:
+                    on_data(last_data)
+                except Exception as e:
+                    self.add_message(f"on_data callback error: {e}")
+
             # Wait to ensure 1s interval
             elapsed = time.time() - cycle_start
             if elapsed < 1.0:
                 time.sleep(1.0 - elapsed)
         
         # 4. Check RH deviation
-        print("    Checking RH deviation...")
+        self.add_message("Checking RH deviation")
         
         if not self.running:
             return False, dry_flow, wet_flow
@@ -296,7 +312,7 @@ class Controller:
         
         if actual_rh is not None:
             deviation = abs(actual_rh - target_rh)
-            print(f"    Current RH: {actual_rh:.1f}% (Target: {target_rh:.1f}%, Deviation: {deviation:.1f}%)")
+            self.add_message(f"Current RH: {actual_rh:.1f}% (Target: {target_rh:.1f}%, Deviation: {deviation:.1f}%)")
             
             final_dry = last_data.get('dry_flow')
             if final_dry is None:
@@ -307,13 +323,13 @@ class Controller:
                 final_wet = wet_flow
 
             if deviation <= stabilization_tolerance:
-                print(f"    RH within {stabilization_tolerance}% tolerance. Proceeding.")
+                self.add_message(f"RH within {stabilization_tolerance}% tolerance. Proceeding.")
                 return True, final_dry, final_wet
             else:
-                print(f"    Warning: RH deviation {deviation:.1f}% exceeds tolerance {stabilization_tolerance}%. Proceeding anyway.")
+                self.add_message(f"Warning: RH deviation {deviation:.1f}% exceeds tolerance {stabilization_tolerance}%. Proceeding anyway.")
                 return False, final_dry, final_wet
         else:
-            print("    Warning: No RH reading available. Proceeding anyway.")
+            self.add_message("Warning: No RH reading available. Proceeding anyway.")
             return False, dry_flow, wet_flow
     
 
@@ -322,53 +338,75 @@ class Controller:
                                stabilization_time: float, stabilization_tolerance: float,
                                on_data: Optional[Callable[[Dict], None]] = None):
         self.running = True
-        print(f"Starting experiment: {direction}, {steps} steps, {duration} min")
         
-        # Define RH targets based on direction
-        if direction == "up":
-            targets = [i * (100.0 / steps) for i in range(steps + 1)]
-        else:
-            targets = [100.0 - (i * (100.0 / steps)) for i in range(steps + 1)]
-            
-        step_duration_sec = (duration * 60) / len(targets)
+        # Start logging
+        self.logger.start_new_log(self.log_fields)
         
-        for target_rh in targets:
-            if not self.running:
-                break
-                
-            print(f"\n=== Target RH: {target_rh:.1f}% ===")
+        try:
+            msg = f"Starting experiment: {direction}, {steps} steps, {duration} min"
+            self.add_message(msg)
             
-            # 1. Stabilize
-            is_stable, dry, wet = self.stabilize_flows_for_rh(
-                target_rh=target_rh,
-                max_flow=max_flow,
-                on_data=on_data,
-                stabilization_tolerance=stabilization_tolerance,
-                stabilization_time=stabilization_time
-            )
+            # Define RH targets based on direction
+            if direction == "up":
+                targets = [i * (100.0 / steps) for i in range(steps + 1)]
+            else:
+                targets = [100.0 - (i * (100.0 / steps)) for i in range(steps + 1)]
+                
+            step_duration_sec = (duration * 60) / len(targets)
             
-            if not self.running:
-                break
-
-            # 2. Hold for step duration
-            print(f"    Holding for {step_duration_sec:.1f} seconds...")
-            start_hold = time.time()
-            while (time.time() - start_hold) < step_duration_sec and self.running:
-                cycle_start = time.time()
-                
-                # Read and Log
-                data = self.read_all_sensors()
-                self.logger.log_data(data)
-                if on_data:
-                    on_data(data)
-                
-                # Wait for next control interval
-                elapsed = time.time() - cycle_start
-                if elapsed < control_interval:
-                    time.sleep(control_interval - elapsed)
+            for target_rh in targets:
+                if not self.running:
+                    break
                     
-        self.running = False
-        print("Experiment finished.")
+                msg = f"\n=== Target RH: {target_rh:.1f}% ==="
+                self.add_message(msg)
+                
+                # 1. Stabilize
+                is_stable, dry, wet = self.stabilize_flows_for_rh(
+                    target_rh=target_rh,
+                    max_flow=max_flow,
+                    on_data=on_data,
+                    stabilization_tolerance=stabilization_tolerance,
+                    stabilization_time=stabilization_time
+                )
+                
+                if not self.running:
+                    break
+
+                # 2. Hold for step duration
+                msg = f"    Holding for {step_duration_sec:.1f} seconds..."
+                self.add_message(msg)
+                start_hold = time.time()
+                while (time.time() - start_hold) < step_duration_sec and self.running:
+                    cycle_start = time.time()
+
+                    # Read and Log (protected)
+                    try:
+                        data = self.read_all_sensors()
+                    except Exception as e:
+                        self.add_message(f"Error reading sensors during hold: {e}")
+                        data = {}
+
+                    try:
+                        self.logger.log_data(data)
+                    except Exception as e:
+                        self.add_message(f"Logger error during hold: {e}")
+
+                    if on_data:
+                        try:
+                            on_data(data)
+                        except Exception as e:
+                            self.add_message(f"on_data callback error during hold: {e}")
+
+                    # Wait for next control interval
+                    elapsed = time.time() - cycle_start
+                    if elapsed < control_interval:
+                        time.sleep(control_interval - elapsed)
+        finally:
+            self.running = False
+            self.logger.close()
+            msg = "Experiment finished."
+            self.add_message(msg)
 
     def update_settings(self, new_config: Dict):
         self.config.update(new_config)
@@ -377,16 +415,7 @@ class Controller:
         log_dir = new_config.get('log_dir', 'data')
         log_prefix = new_config.get('log_prefix', 'nsim_log')
         
-        self.logger.output_dir = Path(log_dir)
-        self.logger.filename_prefix = log_prefix
-        self.logger.output_dir.mkdir(parents=True, exist_ok=True)
-
-    def warn_if_temp_delta(self, data: Dict[str, Optional[float]]):
-        cell_temp = data.get('cell_temp')
-        ambient_temp = data.get('ambient_temp')
-        if cell_temp is None or ambient_temp is None:
-            return
-        delta = abs(cell_temp - ambient_temp)
-        if delta > 5:
-            print(f"  ⚠ Warning: Cell vs Ambient temperature differs by {delta:.2f} °C")
-
+        if self.logger is not None:
+            self.logger.output_dir = Path(log_dir)
+            self.logger.filename_prefix = log_prefix
+            self.logger.output_dir.mkdir(parents=True, exist_ok=True)

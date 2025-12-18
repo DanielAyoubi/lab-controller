@@ -21,6 +21,7 @@ class VogtlinMFC:
         self.address = address
         self.name = name
         self.instrument: Optional[minimalmodbus.Instrument] = None
+        self.connected = False
 
     def __enter__(self):
         self.connect()
@@ -38,6 +39,7 @@ class VogtlinMFC:
             self.instrument.serial.timeout = 0.5
             time.sleep(0.5)  # wait for bus to stabilize
             print(f"Connected to {self.name} at {self.port} (addr={self.address})")
+            self.connected = True
             return True
         except Exception as e:
             print(f"Error connecting to {self.name} on {self.port}: {e}")
@@ -51,6 +53,9 @@ class VogtlinMFC:
                 pass
             self.instrument.serial.close()
             print(f"Disconnected {self.name}.")
+
+    def is_connected(self) -> bool:
+        return self.connected
 
     def _read_float(self, address: int) -> float:
         regs = self.instrument.read_registers(address, 2)

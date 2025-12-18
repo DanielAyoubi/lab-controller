@@ -104,7 +104,7 @@ class RealTimePlotWidget(QWidget):
 
         self.canvas.fig.tight_layout()
 
-    def update_plot(self, data: Dict[str, float]):
+    def update_plot(self, data: Dict[str, Optional[float]]):
         # Parse timestamp
         if "timestamp" not in data:
             timestamp = datetime.now()

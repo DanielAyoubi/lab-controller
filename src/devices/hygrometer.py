@@ -3,13 +3,14 @@ import time
 import re
 import math
 
-class DewMaster:
-    def __init__(self, port: str, baudrate: int, timeout: float = 2.0, name: str = "DewMaster"):
+class Hygrometer:
+    def __init__(self, port: str, baudrate: int, timeout: float = 2.0, name: str = "Hygrometer"):
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.name = name
         self.ser = None
+        self.connected = False
         # Regex for: "DP = -7.6 C  AT = 24.1 C  RH = 23.5"
         self.data_pattern = re.compile(r"DP\s*=\s*(?P<dp>-?\d+\.\d)\s*C.*?AT\s*=\s*(?P<at>-?\d+\.\d)\s*C.*?RH\s*=\s*(?P<rh>-?\d+\.\d)", re.IGNORECASE)
 
@@ -26,6 +27,7 @@ class DewMaster:
             time.sleep(1)
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
+            self.connected = True
             return True
         except Exception as e:
             raise RuntimeError(f"Failed to connect to {self.name}: {e}")
@@ -34,6 +36,9 @@ class DewMaster:
         if self.ser and self.ser.is_open:
             self.ser.close()
             print(f"Disconnected {self.name}.")
+
+    def is_connected(self) -> bool:
+        return self.connected
 
     def get_readings(self):
         if not self.ser or not self.ser.is_open:
