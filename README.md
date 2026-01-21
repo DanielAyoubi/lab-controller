@@ -57,47 +57,13 @@ CONFIG = {
 
 ### Basic Usage
 
-Run the control system with default settings:
+Run the control system:
 ```bash
 python main.py
 ```
 
-### Command Line Options
+Settings can be adjusted in the GUI or by editing `config.py`.
 
-```bash
-python main.py --help
-```
-
-Available options:
-- `--config CONFIG`: Path to configuration file (default: config.py)
-- `--dry-mfc PORT`: Dry air MFC serial port
-- `--wet-mfc PORT`: Wet air MFC serial port
-- `--hygrometer PORT`: Hygrometer serial port
-- `--interval SECONDS`: Sampling interval in seconds (default: 1.0)
-- `--dry-flow RATE`: Set dry air flow rate in ml/min
-- `--wet-flow RATE`: Set wet air flow rate in ml/min
-
-### Examples
-
-1. **Start monitoring with custom ports:**
-```bash
-python main.py --dry-mfc /dev/ttyUSB0 --wet-mfc /dev/ttyUSB1 --hygrometer /dev/ttyUSB2
-```
-
-2. **Set flow rates and start monitoring:**
-```bash
-python main.py --dry-flow 100.0 --wet-flow 50.0
-```
-
-3. **Use custom sampling interval:**
-```bash
-python main.py --interval 2.0
-```
-
-4. **Run demo with simulated data (no hardware required):**
-```bash
-python demo.py
-```
 
 5. **Explore API usage examples:**
 ```bash

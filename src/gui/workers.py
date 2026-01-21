@@ -32,9 +32,10 @@ class ExperimentWorker(QThread):
                 control_interval_sec = 1.0
 
             self.controller.run_automated_experiment(
+                min_rh=self.config.get('experiment_min_rh', 0.0),
+                max_rh=self.config.get('experiment_max_rh', 100.0),
                 direction=self.config.get('experiment_direction', 'up'),
                 steps=self.config.get('experiment_steps', 10),
-                duration=self.config.get('experiment_duration', 60.0),
                 max_flow=self.config.get('max_flow', 2.0),
                 control_interval=control_interval_sec,
                 rh_tolerance=self.config.get('rh_tolerance', 5.0),

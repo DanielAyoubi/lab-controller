@@ -7,7 +7,6 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QGroupBox, QDoubleSpinBox, 
     QFormLayout, QMessageBox, QComboBox
 )
-from PyQt6.QtWidgets import QTextEdit
 from PyQt6.QtCore import QTimer
 
 from src.devices.controller import Controller
@@ -126,7 +125,6 @@ class MainWindow(QMainWindow):
             ("dry_mfc", "Dry Air MFC"),
             ("wet_mfc", "Wet Air MFC"),
             ("hygrometer", "Hygrometer"),
-            ("t_probe", "Thermocouple"),
             ("chiller", "Julabo Chiller"),
         ]
         for key, name in devices:
@@ -144,16 +142,6 @@ class MainWindow(QMainWindow):
 
         device_group.setLayout(device_layout)
         layout.addWidget(device_group)
-
-        # Connection Log
-        log_group = QGroupBox("Connection Log")
-        log_layout = QVBoxLayout()
-        self.log_widget = QTextEdit()
-        self.log_widget.setReadOnly(True)
-        self.log_widget.setFixedHeight(140)
-        log_layout.addWidget(self.log_widget)
-        log_group.setLayout(log_layout)
-        layout.addWidget(log_group)
 
         # Manual Control
         manual_group = QGroupBox("Manual Control")
@@ -178,6 +166,32 @@ class MainWindow(QMainWindow):
         manual_layout.addRow(self.btn_set_flow)
         manual_group.setLayout(manual_layout)
         layout.addWidget(manual_group)
+
+        # RH Control
+        rh_group = QGroupBox("RH Control (PID)")
+        rh_layout = QFormLayout()
+
+        self.spin_rh_target = QDoubleSpinBox()
+        self.spin_rh_target.setRange(0, 100)
+        self.spin_rh_target.setValue(50.0)
+        self.spin_rh_target.setSuffix(" %")
+
+        self.spin_rh_total_flow = QDoubleSpinBox()
+        self.spin_rh_total_flow.setRange(0, 5.0)
+        self.spin_rh_total_flow.setSingleStep(0.1)
+        self.spin_rh_total_flow.setValue(2.0)
+        self.spin_rh_total_flow.setSuffix(" L/min")
+
+        self.btn_toggle_rh_control = QPushButton("Start RH Control")
+        # self.btn_toggle_rh_control.setCheckable(True) # Managing state manually might be better
+        self.btn_toggle_rh_control.clicked.connect(self.toggle_rh_control)
+        self.btn_toggle_rh_control.setEnabled(False)
+
+        rh_layout.addRow("Target RH:", self.spin_rh_target)
+        rh_layout.addRow("Total Flow:", self.spin_rh_total_flow)
+        rh_layout.addRow(self.btn_toggle_rh_control)
+        rh_group.setLayout(rh_layout)
+        layout.addWidget(rh_group)
 
         # Chiller Control
         chiller_group = QGroupBox("Chiller Control")
@@ -208,18 +222,31 @@ class MainWindow(QMainWindow):
         
         self.combo_direction = QComboBox()
         self.combo_direction.addItems(["up", "down"])
+        self.combo_direction.setCurrentText(self.config.get('experiment_direction', 'up'))
         
-        self.spin_duration = QDoubleSpinBox()
-        self.spin_duration.setRange(1, 600)
-        self.spin_duration.setValue(60)
-        self.spin_duration.setSuffix(" min")
+        self.spin_min_rh = QDoubleSpinBox()
+        self.spin_min_rh.setRange(0.0, 100.0)
+        self.spin_min_rh.setValue(self.config.get('experiment_min_rh', 0.0))
+        self.spin_min_rh.setSuffix(" %")
+
+        self.spin_max_rh = QDoubleSpinBox()
+        self.spin_max_rh.setRange(0.0, 100.0)
+        self.spin_max_rh.setValue(self.config.get('experiment_max_rh', 100.0))
+        self.spin_max_rh.setSuffix(" %")
+
+        self.spin_steps = QDoubleSpinBox()
+        self.spin_steps.setDecimals(0)
+        self.spin_steps.setRange(1, 100)
+        self.spin_steps.setValue(self.config.get('experiment_steps', 10))
 
         self.btn_start_exp = QPushButton("Start Experiment")
         self.btn_start_exp.clicked.connect(self.toggle_experiment)
         self.btn_start_exp.setEnabled(False)
 
         exp_layout.addRow("Direction:", self.combo_direction)
-        exp_layout.addRow("Duration:", self.spin_duration)
+        exp_layout.addRow("Min RH:", self.spin_min_rh)
+        exp_layout.addRow("Max RH:", self.spin_max_rh)
+        exp_layout.addRow("Steps:", self.spin_steps)
         exp_layout.addRow(self.btn_start_exp)
         exp_group.setLayout(exp_layout)
         layout.addWidget(exp_group)
@@ -230,15 +257,17 @@ class MainWindow(QMainWindow):
         
         self.lbl_dry_flow = QLabel("0.00 L/min")
         self.lbl_wet_flow = QLabel("0.00 L/min")
-        self.lbl_temp = QLabel("0.00 °C")
-        self.lbl_rh = QLabel("0.00 %")
-        self.lbl_chiller_read = QLabel("0.00 °C")
+        self.lbl_hygrometer_temp = QLabel("0.00 °C")
+        self.lbl_hygrometer_rh = QLabel("0.00 %")
+        self.lbl_chiller_temp = QLabel("0.00 °C")
+        self.lbl_chiller_rh = QLabel("0.00 %")
         
         readings_layout.addRow("Dry Flow:", self.lbl_dry_flow)
         readings_layout.addRow("Wet Flow:", self.lbl_wet_flow)
-        readings_layout.addRow("Cell Temp:", self.lbl_temp)
-        readings_layout.addRow("Chiller Temp:", self.lbl_chiller_read)
-        readings_layout.addRow("Humidity:", self.lbl_rh)
+        readings_layout.addRow("Hygrometer Temp:", self.lbl_hygrometer_temp)
+        readings_layout.addRow("Chiller Temp:", self.lbl_chiller_temp)
+        readings_layout.addRow("Hygrometer RH:", self.lbl_hygrometer_rh)
+        readings_layout.addRow("Chiller RH:", self.lbl_chiller_rh)
         
         readings_group.setLayout(readings_layout)
         layout.addWidget(readings_group)
@@ -282,16 +311,6 @@ class MainWindow(QMainWindow):
                             label.setText("Not configured")
                             label.setStyleSheet("color: gray")
 
-                # Populate connection log
-                try:
-                    self.log_widget.clear()
-                    msgs = getattr(self.controller, 'connect_messages', [])
-                    for line in msgs:
-                        self.log_widget.append(line)
-                    self._log_index = len(msgs)
-                except Exception:
-                    pass
-
                 # Update overall status and buttons
                 if any_connected and not any_failed:
                     self.lbl_status.setText("Status: Connected")
@@ -300,6 +319,7 @@ class MainWindow(QMainWindow):
                     self.btn_set_flow.setEnabled(True)
                     self.btn_set_chiller.setEnabled(True)
                     self.btn_start_exp.setEnabled(True)
+                    self.btn_toggle_rh_control.setEnabled(True)
                 elif any_connected:
                     self.lbl_status.setText("Status: Partial Connection")
                     self.lbl_status.setStyleSheet("color: orange")
@@ -307,6 +327,7 @@ class MainWindow(QMainWindow):
                     self.btn_set_flow.setEnabled(True)
                     self.btn_set_chiller.setEnabled(True)
                     self.btn_start_exp.setEnabled(True)
+                    self.btn_toggle_rh_control.setEnabled(True)
                 else:
                     self.lbl_status.setText("Status: Disconnected")
                     self.lbl_status.setStyleSheet("color: red")
@@ -320,6 +341,7 @@ class MainWindow(QMainWindow):
             self.btn_set_flow.setEnabled(False)
             self.btn_set_chiller.setEnabled(False)
             self.btn_start_exp.setEnabled(False)
+            self.btn_toggle_rh_control.setEnabled(False)
             # Clear device labels
             if hasattr(self, 'device_labels'):
                 for key, lbl in self.device_labels.items():
@@ -329,11 +351,6 @@ class MainWindow(QMainWindow):
                     else:
                         lbl.setText("Disconnected")
                         lbl.setStyleSheet("color: red")
-            # Update log widget
-            try:
-                self.log_widget.append("Disconnected all devices.")
-            except Exception:
-                pass
 
     def set_manual_flow(self):
         dry = self.spin_dry.value()
@@ -353,6 +370,34 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to set chiller temperature: {e}")
 
+    def toggle_rh_control(self):
+        if self.controller.rh_control_active:
+            # Stop
+            self.controller.set_rh_control_active(False)
+            self.btn_toggle_rh_control.setText("Start RH Control")
+            self.btn_toggle_rh_control.setStyleSheet("")
+            
+            # Re-enable inputs
+            self.btn_set_flow.setEnabled(True)
+            self.spin_rh_target.setEnabled(True)
+            self.spin_rh_total_flow.setEnabled(True)
+            self.btn_start_exp.setEnabled(True)
+        else:
+            # Start
+            target = self.spin_rh_target.value()
+            total_flow = self.spin_rh_total_flow.value()
+            
+            self.controller.set_rh_control_active(True, target, total_flow)
+            
+            self.btn_toggle_rh_control.setText("Stop RH Control")
+            self.btn_toggle_rh_control.setStyleSheet("background-color: #ffcccc") # Light red to indicate active/stop
+            
+            # Disable inputs to prevent conflict
+            self.btn_set_flow.setEnabled(False)
+            self.spin_rh_target.setEnabled(False) 
+            self.spin_rh_total_flow.setEnabled(False)
+            self.btn_start_exp.setEnabled(False)
+
     def toggle_experiment(self):
         if self.experiment_worker and self.experiment_worker.isRunning():
             # Stop experiment
@@ -365,13 +410,14 @@ class MainWindow(QMainWindow):
             # Start experiment
             # Update config with UI values
             self.config['experiment_direction'] = self.combo_direction.currentText()
-            self.config['experiment_duration'] = self.spin_duration.value()
+            self.config['experiment_min_rh'] = self.spin_min_rh.value()
+            self.config['experiment_max_rh'] = self.spin_max_rh.value()
+            self.config['experiment_steps'] = int(self.spin_steps.value())
             
             self.experiment_worker = ExperimentWorker(self.controller, self.config)
             self.experiment_worker.finished.connect(self.on_experiment_finished)
             self.experiment_worker.error.connect(self.on_experiment_error)
             self.experiment_worker.data_ready.connect(self.update_readings)
-            self.experiment_worker.progress.connect(lambda m: self.log_widget.append(f"[Worker] {m}"))
             self.experiment_worker.start()
             
             self.update_timer.stop()
@@ -395,6 +441,16 @@ class MainWindow(QMainWindow):
         try:
             if self.controller.is_connected():
                 data = self.controller.read_all_sensors()
+                
+                # Exec RH Control Loop Logic
+                if self.controller.rh_control_active:
+                    # Prefer Chiller RH -> Hygrometer RH
+                    curr_rh = data.get('rh_chiller')
+                    if curr_rh is None:
+                        curr_rh = data.get('rh_hygrometer')
+                    
+                    self.controller.update_rh_control_loop(curr_rh)
+                    
                 self.update_readings(data)
         except Exception:
             pass
@@ -415,24 +471,29 @@ class MainWindow(QMainWindow):
             if data.get('wet_flow') is not None:
                 self.lbl_wet_flow.setText(f"{data['wet_flow']:.2f} L/min")
             
-            temp = data.get('cell_temp') or data.get('ambient_temp')
-            if temp is not None:
-                self.lbl_temp.setText(f"{temp:.2f} °C")
+            hygrometer_temp = data.get('hygrometer_temp')
+            if hygrometer_temp is not None:
+                self.lbl_hygrometer_temp.setText(f"{hygrometer_temp:.2f} °C")
                 
-            rh = data.get('relative_humidity')
-            if rh is not None:
-                self.lbl_rh.setText(f"{rh:.2f} %")
+            # Update RH Labels
+            rh_hygro = data.get('rh_hygrometer')
+            if rh_hygro is not None:
+                self.lbl_hygrometer_rh.setText(f"{rh_hygro:.2f} %")
+                
+            rh_chill = data.get('rh_chiller')
+            if rh_chill is not None:
+                self.lbl_chiller_rh.setText(f"{rh_chill:.2f} %")
 
             # Update Chiller Temp
             chiller_temp = data.get('chiller_temp')
             if chiller_temp is not None:
-                self.lbl_chiller_read.setText(f"{chiller_temp:.2f} °C")
+                self.lbl_chiller_temp.setText(f"{chiller_temp:.2f} °C")
 
             # Monitor Logic
             if self.target_chiller_temp is not None:
-                cell_temp = data.get('cell_temp')
-                if cell_temp is not None:
-                    diff = abs(cell_temp - self.target_chiller_temp)
+                chiller_temp = data.get('chiller_temp')
+                if chiller_temp is not None:
+                    diff = abs(chiller_temp - self.target_chiller_temp)
                     if diff < 0.5: # Tolerance
                         self.lbl_chiller_monitor.setText("Monitor: Target Reached")
                         self.lbl_chiller_monitor.setStyleSheet("color: green")
@@ -442,16 +503,6 @@ class MainWindow(QMainWindow):
 
             # Update Plot
             self.plot_widget.update_plot(data)
-            
-            # Append any new controller messages to log widget
-            try:
-                msgs = getattr(self.controller, 'connect_messages', [])
-                if len(msgs) > self._log_index:
-                    for m in msgs[self._log_index:]:
-                        self.log_widget.append(m)
-                    self._log_index = len(msgs)
-            except Exception:
-                pass
             
         except Exception:
             # Don't spam errors

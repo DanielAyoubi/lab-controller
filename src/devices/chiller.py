@@ -43,7 +43,6 @@ class JulaboChiller:
     def send_command(self, command):
         # Appends Carriage Return (Hex 0D) and Line Feed (Hex 0A) as per.
         if not self.ser or not self.ser.is_open:
-            print("Serial port not open.")
             return None
 
         # Command structure requires CR + LF terminators
@@ -71,26 +70,26 @@ class JulaboChiller:
 
     def get_internal_temperature(self):
         self.send_command("in_pv_00")
-        return self.read_response()
+        resp = self.read_response()
+        try:
+            return float(resp) if resp else None
+        except ValueError:
+            return None
 
     def get_external_temperature(self):
         self.send_command("in_pv_02")
-        return self.read_response()
-
-    def get_current_temperature(self):
+        resp = self.read_response()
         try:
-            temp = self.get_external_temperature()
-            return temp if temp is not None else self.get_internal_temperature()
-        except Exception as e:
-            print(f"Error getting current temperature: {e}")
-        return None
+            return float(resp) if resp else None
+        except ValueError:
+            return None
 
     def get_setpoint_temperature(self):
+        self.send_command("in_sp_00")
+        resp = self.read_response()
         try:
-            self.send_command("in_sp_00")
-            return self.read_response()
-        except Exception as e:
-            print(f"Error reading setpoint temperature: {e}")
+            return float(resp) if resp else None
+        except ValueError:
             return None
 
     def set_setpoint_temperature(self, temperature):

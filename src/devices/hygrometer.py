@@ -28,6 +28,7 @@ class Hygrometer:
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
             self.connected = True
+            print(f"Connected to {self.name} on {self.port} at {self.baudrate} baud.")
             return True
         except Exception as e:
             raise RuntimeError(f"Failed to connect to {self.name}: {e}")
@@ -63,7 +64,6 @@ class Hygrometer:
                     return {
                         "dewpoint_temp": dewpoint,
                         "ambient_temp": ambient,
-                        "relative_humidity_device": float(m.group("rh")),
                         "relative_humidity_calculated": self.compute_relative_humidity(dewpoint, ambient)
                     }
 

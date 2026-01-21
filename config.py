@@ -31,23 +31,16 @@ CONFIG = {
     "chiller_baudrate": 9600,
     "hygrometer_baudrate": 19200,
 
-    # Thermocouple (USB) settings
-    "t_probe_enabled": False,
-    "t_probe_vendor_id": 0x2177,
-    "t_probe_product_id": 0x0004,
-
-    # Relative humidity control settings
-    "rh_temperature_source": "chiller",  # Options: "hygrometer" (DewMaster hygrometer ambient temp), "thermocouple" (Thermocouple cell temp), "chiller" (Chiller bath temp)
-    
     # Automated experiment settings
-    "experiment_direction": "up",       # "up" for 0% to 100% RH, "down" for 100% to 0% RH
+    "experiment_direction": "up",       # "up" or "down"
+    "experiment_min_rh": 0.0,
+    "experiment_max_rh": 100.0,
     "experiment_steps": 10,             # Number of steps between start and end RH
-    "experiment_duration": 60.0,        # Total experiment duration in minutes
     "max_flow": 1.0,                   # Maximum/target total flow rate (dry + wet) in L/min
-    "control_interval": 5000,  # Update interval in seconds
-    "rh_tolerance": 5.0,               # Maximum allowed deviation from target RH before adjustment (%)
+    "control_interval": 5000,  # Update interval in milliseconds
+    "rh_tolerance": 1.0,               # Maximum allowed deviation from target RH (%)
     
     # Experiment stabilization settings
-    "stabilization_time": 60.0,        # Maximum time to stabilize flows at each step (seconds)
-    "stabilization_tolerance": 5.0,    # RH tolerance for considering flows stable (%)
+    "stabilization_time": 600.0,        # Maximum timeout per step (seconds)
+    "stabilization_tolerance": 0.5,    # RH fluctuation tolerance for considering flows stable (%)
 }

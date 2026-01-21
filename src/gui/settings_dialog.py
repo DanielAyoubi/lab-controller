@@ -69,10 +69,6 @@ class SettingsDialog(QDialog):
         self.hygrometer_enabled.setChecked(bool(self.config.get("hygrometer_enabled", True)))
         layout.addRow(self.hygrometer_enabled)
 
-        self.t_probe_enabled = QCheckBox("Thermocouple (t_probe) enabled")
-        self.t_probe_enabled.setChecked(bool(self.config.get("t_probe_enabled", False)))
-        layout.addRow(self.t_probe_enabled)
-
         self.chiller_enabled = QCheckBox("Chiller enabled")
         self.chiller_enabled.setChecked(bool(self.config.get("chiller_enabled", True)))
         layout.addRow(self.chiller_enabled)
@@ -146,7 +142,6 @@ class SettingsDialog(QDialog):
             "dry_mfc_enabled": bool(self.dry_mfc_enabled.isChecked()),
             "wet_mfc_enabled": bool(self.wet_mfc_enabled.isChecked()),
             "hygrometer_enabled": bool(self.hygrometer_enabled.isChecked()),
-            "t_probe_enabled": bool(self.t_probe_enabled.isChecked()),
             "chiller_enabled": bool(self.chiller_enabled.isChecked()),
             "dry_mfc_port": self.dry_mfc_port.text(),
             "wet_mfc_port": self.wet_mfc_port.text(),
@@ -155,7 +150,6 @@ class SettingsDialog(QDialog):
             "hygrometer_baudrate": self.hygrometer_baudrate.value(),
             "experiment_steps": self.experiment_steps.value(),
             "max_flow": self.max_flow.value(),
-            # control interval (seconds)
             "rh_tolerance": self.rh_tolerance.value(),
             "stabilization_time": self.stabilization_time.value(),
             "stabilization_tolerance": self.stabilization_tolerance.value(),
