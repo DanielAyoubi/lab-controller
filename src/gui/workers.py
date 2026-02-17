@@ -35,12 +35,9 @@ class ExperimentWorker(QThread):
                 min_rh=self.config.get('experiment_min_rh', 0.0),
                 max_rh=self.config.get('experiment_max_rh', 100.0),
                 direction=self.config.get('experiment_direction', 'up'),
-                steps=self.config.get('experiment_steps', 10),
+                ramp_rate=self.config.get('experiment_ramp_rate', 0.5),
                 max_flow=self.config.get('max_flow', 2.0),
                 control_interval=control_interval_sec,
-                rh_tolerance=self.config.get('rh_tolerance', 5.0),
-                stabilization_time=self.config.get('stabilization_time', 60.0),
-                stabilization_tolerance=self.config.get('stabilization_tolerance', 2.0),
                 on_data=self.data_ready.emit
             )
             self.progress.emit("Experiment completed successfully.")

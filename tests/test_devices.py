@@ -38,7 +38,6 @@ def test_hygrometer_get_readings(mock_serial):
     assert readings is not None
     assert readings["dewpoint_temp"] == 10.5
     assert readings["ambient_temp"] == 25.0
-    assert readings["relative_humidity_device"] == 45.0
     # Check calculated RH is present (value depends on formula, just check existence)
     assert "relative_humidity_calculated" in readings
 

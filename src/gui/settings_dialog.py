@@ -98,10 +98,13 @@ class SettingsDialog(QDialog):
         tab = QWidget()
         layout = QFormLayout(tab)
         
-        self.experiment_steps = QSpinBox()
-        self.experiment_steps.setRange(1, 100)
-        self.experiment_steps.setValue(self.config.get("experiment_steps", 10))
-        layout.addRow("Experiment Steps:", self.experiment_steps)
+        self.experiment_ramp_rate = QDoubleSpinBox()
+        self.experiment_ramp_rate.setDecimals(2)
+        self.experiment_ramp_rate.setRange(0.01, 10.0)
+        self.experiment_ramp_rate.setSingleStep(0.1)
+        self.experiment_ramp_rate.setValue(self.config.get("experiment_ramp_rate", 0.5))
+        self.experiment_ramp_rate.setSuffix(" %/min")
+        layout.addRow("Ramp Rate:", self.experiment_ramp_rate)
         
         self.max_flow = QDoubleSpinBox()
         self.max_flow.setRange(0.1, 10.0)
@@ -109,27 +112,6 @@ class SettingsDialog(QDialog):
         self.max_flow.setValue(self.config.get("max_flow", 2.0))
         self.max_flow.setSuffix(" L/min")
         layout.addRow("Max Flow:", self.max_flow)
-        
-        # The single update parameter `control_interval` (seconds)
-        # controls how often data are read and the GUI plot is refreshed.
-        
-        self.rh_tolerance = QDoubleSpinBox()
-        self.rh_tolerance.setRange(0.1, 20.0)
-        self.rh_tolerance.setValue(self.config.get("rh_tolerance", 5.0))
-        self.rh_tolerance.setSuffix(" %")
-        layout.addRow("RH Tolerance:", self.rh_tolerance)
-        
-        self.stabilization_time = QDoubleSpinBox()
-        self.stabilization_time.setRange(0, 600.0)
-        self.stabilization_time.setValue(self.config.get("stabilization_time", 60.0))
-        self.stabilization_time.setSuffix(" s")
-        layout.addRow("Stabilization Time:", self.stabilization_time)
-        
-        self.stabilization_tolerance = QDoubleSpinBox()
-        self.stabilization_tolerance.setRange(0.1, 20.0)
-        self.stabilization_tolerance.setValue(self.config.get("stabilization_tolerance", 2.0))
-        self.stabilization_tolerance.setSuffix(" %")
-        layout.addRow("Stabilization Tolerance:", self.stabilization_tolerance)
         
         self.tabs.addTab(tab, "Experiment")
 
@@ -148,9 +130,6 @@ class SettingsDialog(QDialog):
             "hygrometer_port": self.hygrometer_port.text(),
             "mfc_baudrate": self.mfc_baudrate.value(),
             "hygrometer_baudrate": self.hygrometer_baudrate.value(),
-            "experiment_steps": self.experiment_steps.value(),
+            "experiment_ramp_rate": self.experiment_ramp_rate.value(),
             "max_flow": self.max_flow.value(),
-            "rh_tolerance": self.rh_tolerance.value(),
-            "stabilization_time": self.stabilization_time.value(),
-            "stabilization_tolerance": self.stabilization_tolerance.value(),
         }

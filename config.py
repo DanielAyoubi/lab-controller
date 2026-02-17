@@ -35,12 +35,7 @@ CONFIG = {
     "experiment_direction": "up",       # "up" or "down"
     "experiment_min_rh": 0.0,
     "experiment_max_rh": 100.0,
-    "experiment_steps": 10,             # Number of steps between start and end RH
+    "experiment_ramp_rate": 0.5,        # Rate of RH change in %/min
     "max_flow": 1.0,                   # Maximum/target total flow rate (dry + wet) in L/min
     "control_interval": 5000,  # Update interval in milliseconds
-    "rh_tolerance": 1.0,               # Maximum allowed deviation from target RH (%)
-    
-    # Experiment stabilization settings
-    "stabilization_time": 600.0,        # Maximum timeout per step (seconds)
-    "stabilization_tolerance": 0.5,    # RH fluctuation tolerance for considering flows stable (%)
 }

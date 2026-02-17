@@ -27,8 +27,6 @@ class MainWindow(QMainWindow):
         self.controller = Controller(self.config)
         self.experiment_worker: Optional[ExperimentWorker] = None
         self.target_chiller_temp: Optional[float] = None
-        # Index of last consumed log message from controller
-        self._log_index = 0
 
         # Setup UI
         self.central_widget = QWidget()
@@ -217,7 +215,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(chiller_group)
 
         # Experiment Control
-        exp_group = QGroupBox("Automated Experiment")
+        exp_group = QGroupBox("RH Ramp Experiment")
         exp_layout = QFormLayout()
         
         self.combo_direction = QComboBox()
@@ -234,10 +232,12 @@ class MainWindow(QMainWindow):
         self.spin_max_rh.setValue(self.config.get('experiment_max_rh', 100.0))
         self.spin_max_rh.setSuffix(" %")
 
-        self.spin_steps = QDoubleSpinBox()
-        self.spin_steps.setDecimals(0)
-        self.spin_steps.setRange(1, 100)
-        self.spin_steps.setValue(self.config.get('experiment_steps', 10))
+        self.spin_ramp_rate = QDoubleSpinBox()
+        self.spin_ramp_rate.setDecimals(2)
+        self.spin_ramp_rate.setRange(0.01, 10.0)
+        self.spin_ramp_rate.setSingleStep(0.1)
+        self.spin_ramp_rate.setValue(self.config.get('experiment_ramp_rate', 0.5))
+        self.spin_ramp_rate.setSuffix(" %/min")
 
         self.btn_start_exp = QPushButton("Start Experiment")
         self.btn_start_exp.clicked.connect(self.toggle_experiment)
@@ -246,31 +246,10 @@ class MainWindow(QMainWindow):
         exp_layout.addRow("Direction:", self.combo_direction)
         exp_layout.addRow("Min RH:", self.spin_min_rh)
         exp_layout.addRow("Max RH:", self.spin_max_rh)
-        exp_layout.addRow("Steps:", self.spin_steps)
+        exp_layout.addRow("Ramp Rate:", self.spin_ramp_rate)
         exp_layout.addRow(self.btn_start_exp)
         exp_group.setLayout(exp_layout)
         layout.addWidget(exp_group)
-
-        # Current Readings
-        readings_group = QGroupBox("Current Readings")
-        readings_layout = QFormLayout()
-        
-        self.lbl_dry_flow = QLabel("0.00 L/min")
-        self.lbl_wet_flow = QLabel("0.00 L/min")
-        self.lbl_hygrometer_temp = QLabel("0.00 °C")
-        self.lbl_hygrometer_rh = QLabel("0.00 %")
-        self.lbl_chiller_temp = QLabel("0.00 °C")
-        self.lbl_chiller_rh = QLabel("0.00 %")
-        
-        readings_layout.addRow("Dry Flow:", self.lbl_dry_flow)
-        readings_layout.addRow("Wet Flow:", self.lbl_wet_flow)
-        readings_layout.addRow("Hygrometer Temp:", self.lbl_hygrometer_temp)
-        readings_layout.addRow("Chiller Temp:", self.lbl_chiller_temp)
-        readings_layout.addRow("Hygrometer RH:", self.lbl_hygrometer_rh)
-        readings_layout.addRow("Chiller RH:", self.lbl_chiller_rh)
-        
-        readings_group.setLayout(readings_layout)
-        layout.addWidget(readings_group)
 
         # Settings
         self.btn_settings = QPushButton("Settings")
@@ -412,7 +391,7 @@ class MainWindow(QMainWindow):
             self.config['experiment_direction'] = self.combo_direction.currentText()
             self.config['experiment_min_rh'] = self.spin_min_rh.value()
             self.config['experiment_max_rh'] = self.spin_max_rh.value()
-            self.config['experiment_steps'] = int(self.spin_steps.value())
+            self.config['experiment_ramp_rate'] = self.spin_ramp_rate.value()
             
             self.experiment_worker = ExperimentWorker(self.controller, self.config)
             self.experiment_worker.finished.connect(self.on_experiment_finished)
@@ -465,42 +444,7 @@ class MainWindow(QMainWindow):
                 else:
                     return
             
-            # Update Labels
-            if data.get('dry_flow') is not None:
-                self.lbl_dry_flow.setText(f"{data['dry_flow']:.2f} L/min")
-            if data.get('wet_flow') is not None:
-                self.lbl_wet_flow.setText(f"{data['wet_flow']:.2f} L/min")
             
-            hygrometer_temp = data.get('hygrometer_temp')
-            if hygrometer_temp is not None:
-                self.lbl_hygrometer_temp.setText(f"{hygrometer_temp:.2f} °C")
-                
-            # Update RH Labels
-            rh_hygro = data.get('rh_hygrometer')
-            if rh_hygro is not None:
-                self.lbl_hygrometer_rh.setText(f"{rh_hygro:.2f} %")
-                
-            rh_chill = data.get('rh_chiller')
-            if rh_chill is not None:
-                self.lbl_chiller_rh.setText(f"{rh_chill:.2f} %")
-
-            # Update Chiller Temp
-            chiller_temp = data.get('chiller_temp')
-            if chiller_temp is not None:
-                self.lbl_chiller_temp.setText(f"{chiller_temp:.2f} °C")
-
-            # Monitor Logic
-            if self.target_chiller_temp is not None:
-                chiller_temp = data.get('chiller_temp')
-                if chiller_temp is not None:
-                    diff = abs(chiller_temp - self.target_chiller_temp)
-                    if diff < 0.5: # Tolerance
-                        self.lbl_chiller_monitor.setText("Monitor: Target Reached")
-                        self.lbl_chiller_monitor.setStyleSheet("color: green")
-                        self.target_chiller_temp = None # Stop monitoring
-                    else:
-                        self.lbl_chiller_monitor.setText(f"Monitor: Diff {diff:.2f} °C")
-
             # Update Plot
             self.plot_widget.update_plot(data)
             
