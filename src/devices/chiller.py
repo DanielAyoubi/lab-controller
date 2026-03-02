@@ -40,6 +40,19 @@ class JulaboChiller:
     def is_connected(self) -> bool:
         return self.connected
 
+    def _reconnect(self):
+        """Close and reopen the serial port after a write failure."""
+        try:
+            self.ser.close()
+        except Exception:
+            pass
+        self.connected = False
+        self.ser = None
+        try:
+            self.connect()
+        except Exception as e:
+            print(f"Chiller reconnect failed: {e}")
+
     def send_command(self, command):
         # Appends Carriage Return (Hex 0D) and Line Feed (Hex 0A) as per.
         if not self.ser or not self.ser.is_open:
@@ -47,9 +60,13 @@ class JulaboChiller:
 
         # Command structure requires CR + LF terminators
         full_command = f"{command}\r\n"
-        
-        # Encode to bytes
-        self.ser.write(full_command.encode('ascii'))
+
+        try:
+            self.ser.write(full_command.encode('ascii'))
+        except (serial.SerialException, OSError) as e:
+            print(f"Chiller write error, reconnecting: {e}")
+            self._reconnect()
+            return None
         time.sleep(0.1) # Small delay for processing
 
     def read_response(self):

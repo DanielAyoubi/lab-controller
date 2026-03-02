@@ -17,17 +17,18 @@ class DataLogger:
         # Create output directory if it doesn't exist
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
-    def _generate_filename(self) -> str:
+    def _generate_filename(self, prefix: Optional[str] = None) -> str:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{self.filename_prefix}_{timestamp}.csv"
+        p = prefix if prefix is not None else self.filename_prefix
+        filename = f"{p}_{timestamp}.csv"
         return str(self.output_dir / filename)
 
-    def start_new_log(self, fieldnames: List[str]):
+    def start_new_log(self, fieldnames: List[str], prefix: Optional[str] = None):
         # Close existing file handle if open
         self.close()
 
         self.fieldnames = fieldnames
-        self.current_file = self._generate_filename()
+        self.current_file = self._generate_filename(prefix=prefix)
 
         # Open file handle and keep it open for efficient writing
         # Use larger buffer for better performance with high-frequency logging
@@ -63,6 +64,9 @@ class DataLogger:
                 data.append(row)
 
         return data
+
+    def is_logging(self) -> bool:
+        return self._csv_writer is not None
 
     def get_current_filename(self) -> Optional[str]:
         return self.current_file

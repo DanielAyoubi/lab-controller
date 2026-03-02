@@ -3,9 +3,9 @@ import importlib.util
 from typing import Optional
 
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QPushButton, QLabel, QGroupBox, QDoubleSpinBox, 
-    QFormLayout, QMessageBox, QComboBox
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QLabel, QGroupBox, QDoubleSpinBox,
+    QFormLayout, QMessageBox, QComboBox, QCheckBox
 )
 from PyQt6.QtCore import QTimer
 
@@ -27,6 +27,7 @@ class MainWindow(QMainWindow):
         self.controller = Controller(self.config)
         self.experiment_worker: Optional[ExperimentWorker] = None
         self.target_chiller_temp: Optional[float] = None
+        self._last_plot_path: Optional[str] = None
 
         # Setup UI
         self.central_widget = QWidget()
@@ -108,7 +109,10 @@ class MainWindow(QMainWindow):
         self.btn_connect.clicked.connect(self.toggle_connection)
         self.lbl_status = QLabel("Status: Disconnected")
         self.lbl_status.setStyleSheet("color: red")
+        self.chk_save_csv = QCheckBox("Save data to CSV")
+        self.chk_save_csv.setChecked(True)
         conn_layout.addWidget(self.lbl_status)
+        conn_layout.addWidget(self.chk_save_csv)
         conn_layout.addWidget(self.btn_connect)
         conn_group.setLayout(conn_layout)
         layout.addWidget(conn_group)
@@ -185,9 +189,13 @@ class MainWindow(QMainWindow):
         self.btn_toggle_rh_control.clicked.connect(self.toggle_rh_control)
         self.btn_toggle_rh_control.setEnabled(False)
 
+        self.lbl_rh_pid_status = QLabel("Inactive")
+        self.lbl_rh_pid_status.setStyleSheet("color: gray")
+
         rh_layout.addRow("Target RH:", self.spin_rh_target)
         rh_layout.addRow("Total Flow:", self.spin_rh_total_flow)
         rh_layout.addRow(self.btn_toggle_rh_control)
+        rh_layout.addRow("PID Status:", self.lbl_rh_pid_status)
         rh_group.setLayout(rh_layout)
         layout.addWidget(rh_group)
 
@@ -217,36 +225,32 @@ class MainWindow(QMainWindow):
         # Experiment Control
         exp_group = QGroupBox("RH Ramp Experiment")
         exp_layout = QFormLayout()
-        
+
         self.combo_direction = QComboBox()
         self.combo_direction.addItems(["up", "down"])
         self.combo_direction.setCurrentText(self.config.get('experiment_direction', 'up'))
-        
-        self.spin_min_rh = QDoubleSpinBox()
-        self.spin_min_rh.setRange(0.0, 100.0)
-        self.spin_min_rh.setValue(self.config.get('experiment_min_rh', 0.0))
-        self.spin_min_rh.setSuffix(" %")
 
-        self.spin_max_rh = QDoubleSpinBox()
-        self.spin_max_rh.setRange(0.0, 100.0)
-        self.spin_max_rh.setValue(self.config.get('experiment_max_rh', 100.0))
-        self.spin_max_rh.setSuffix(" %")
+        self.spin_step_size = QDoubleSpinBox()
+        self.spin_step_size.setDecimals(1)
+        self.spin_step_size.setRange(0.5, 50.0)
+        self.spin_step_size.setSingleStep(0.5)
+        self.spin_step_size.setValue(self.config.get('experiment_step_size', 5.0))
+        self.spin_step_size.setSuffix(" %")
 
-        self.spin_ramp_rate = QDoubleSpinBox()
-        self.spin_ramp_rate.setDecimals(2)
-        self.spin_ramp_rate.setRange(0.01, 10.0)
-        self.spin_ramp_rate.setSingleStep(0.1)
-        self.spin_ramp_rate.setValue(self.config.get('experiment_ramp_rate', 0.5))
-        self.spin_ramp_rate.setSuffix(" %/min")
+        self.spin_hold_time = QDoubleSpinBox()
+        self.spin_hold_time.setDecimals(0)
+        self.spin_hold_time.setRange(10.0, 3600.0)
+        self.spin_hold_time.setSingleStep(10.0)
+        self.spin_hold_time.setValue(self.config.get('experiment_hold_time', 180.0))
+        self.spin_hold_time.setSuffix(" s")
 
         self.btn_start_exp = QPushButton("Start Experiment")
         self.btn_start_exp.clicked.connect(self.toggle_experiment)
         self.btn_start_exp.setEnabled(False)
 
         exp_layout.addRow("Direction:", self.combo_direction)
-        exp_layout.addRow("Min RH:", self.spin_min_rh)
-        exp_layout.addRow("Max RH:", self.spin_max_rh)
-        exp_layout.addRow("Ramp Rate:", self.spin_ramp_rate)
+        exp_layout.addRow("Step Size (% wet flow):", self.spin_step_size)
+        exp_layout.addRow("Step Wait Time:", self.spin_hold_time)
         exp_layout.addRow(self.btn_start_exp)
         exp_group.setLayout(exp_layout)
         layout.addWidget(exp_group)
@@ -310,9 +314,17 @@ class MainWindow(QMainWindow):
                 else:
                     self.lbl_status.setText("Status: Disconnected")
                     self.lbl_status.setStyleSheet("color: red")
+
+                # Start background CSV log if requested
+                if any_connected and self.chk_save_csv.isChecked():
+                    try:
+                        self.controller.logger.start_new_log(self.controller.log_fields)
+                    except Exception as e:
+                        print(f"Failed to start background log: {e}")
             except Exception as e:
                 QMessageBox.critical(self, "Error", str(e))
         else:
+            self.controller.logger.close()
             self.controller.disconnect_devices()
             self.lbl_status.setText("Status: Disconnected")
             self.lbl_status.setStyleSheet("color: red")
@@ -355,6 +367,8 @@ class MainWindow(QMainWindow):
             self.controller.set_rh_control_active(False)
             self.btn_toggle_rh_control.setText("Start RH Control")
             self.btn_toggle_rh_control.setStyleSheet("")
+            self.lbl_rh_pid_status.setText("Inactive")
+            self.lbl_rh_pid_status.setStyleSheet("color: gray")
             
             # Re-enable inputs
             self.btn_set_flow.setEnabled(True)
@@ -386,50 +400,77 @@ class MainWindow(QMainWindow):
             self.btn_set_flow.setEnabled(True)
             self.update_timer.start(int(self.config.get('control_interval', 5000)))
         else:
-            # Start experiment
-            # Update config with UI values
+            # Start experiment — sync UI values into config
             self.config['experiment_direction'] = self.combo_direction.currentText()
-            self.config['experiment_min_rh'] = self.spin_min_rh.value()
-            self.config['experiment_max_rh'] = self.spin_max_rh.value()
-            self.config['experiment_ramp_rate'] = self.spin_ramp_rate.value()
-            
+            self.config['experiment_step_size'] = self.spin_step_size.value()
+            self.config['experiment_hold_time'] = self.spin_hold_time.value()
+            # Close background log; the experiment will open its own CSV
+            self.controller.logger.close()
+
             self.experiment_worker = ExperimentWorker(self.controller, self.config)
             self.experiment_worker.finished.connect(self.on_experiment_finished)
             self.experiment_worker.error.connect(self.on_experiment_error)
+            self.experiment_worker.progress.connect(self._on_experiment_progress)
             self.experiment_worker.data_ready.connect(self.update_readings)
             self.experiment_worker.start()
-            
+
             self.update_timer.stop()
-            
+
             self.btn_start_exp.setText("Stop Experiment")
             self.btn_set_flow.setEnabled(False)
+
+    def _on_experiment_progress(self, msg: str):
+        if msg.startswith("PLOT_PATH:"):
+            self._last_plot_path = msg[len("PLOT_PATH:"):]
 
     def on_experiment_finished(self):
         self.update_timer.start(int(self.config.get('control_interval', 5000)))
         self.btn_start_exp.setText("Start Experiment")
         self.btn_set_flow.setEnabled(True)
-        QMessageBox.information(self, "Experiment", "Experiment Completed")
+
+        # Restart background log if CSV saving is enabled and devices are still connected
+        if self.chk_save_csv.isChecked() and self.controller.is_connected():
+            try:
+                self.controller.logger.start_new_log(self.controller.log_fields)
+            except Exception as e:
+                print(f"Failed to restart background log: {e}")
+
+        plot_path = self._last_plot_path
+        self._last_plot_path = None
+        msg = "Experiment completed."
+        if plot_path:
+            msg += f"\n\nPlot saved to:\n{plot_path}"
+        QMessageBox.information(self, "Experiment", msg)
 
     def on_experiment_error(self, msg):
         self.update_timer.start(int(self.config.get('control_interval', 5000)))
         self.btn_start_exp.setText("Start Experiment")
         self.btn_set_flow.setEnabled(True)
+        self._last_plot_path = None
         QMessageBox.critical(self, "Experiment Error", msg)
 
     def poll_and_update(self):
         try:
             if self.controller.is_connected():
-                data = self.controller.read_all_sensors()
-                
-                # Exec RH Control Loop Logic
+                data = self.controller.read_and_log()
+
+                # Prefer chiller RH, fall back to hygrometer RH
+                curr_rh = data.get('rh_chiller') or data.get('rh_hygrometer')
+
                 if self.controller.rh_control_active:
-                    # Prefer Chiller RH -> Hygrometer RH
-                    curr_rh = data.get('rh_chiller')
-                    if curr_rh is None:
-                        curr_rh = data.get('rh_hygrometer')
-                    
                     self.controller.update_rh_control_loop(curr_rh)
-                    
+                    status = self.controller.get_rh_control_status(curr_rh)
+                    self.lbl_rh_pid_status.setText(status)
+                    if "Settling" in status:
+                        self.lbl_rh_pid_status.setStyleSheet("color: orange")
+                    elif "At target" in status:
+                        self.lbl_rh_pid_status.setStyleSheet("color: green")
+                    else:
+                        self.lbl_rh_pid_status.setStyleSheet("color: blue")
+                else:
+                    self.lbl_rh_pid_status.setText("Inactive")
+                    self.lbl_rh_pid_status.setStyleSheet("color: gray")
+
                 self.update_readings(data)
         except Exception:
             pass

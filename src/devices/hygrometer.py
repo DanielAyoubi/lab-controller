@@ -41,14 +41,31 @@ class Hygrometer:
     def is_connected(self) -> bool:
         return self.connected
 
+    def _reconnect(self):
+        """Close and reopen the serial port after a write failure."""
+        try:
+            self.ser.close()
+        except Exception:
+            pass
+        self.connected = False
+        try:
+            self.connect()
+        except Exception as e:
+            print(f"Reconnect failed for {self.name}: {e}")
+
     def get_readings(self):
         if not self.ser or not self.ser.is_open:
             return None
 
         # Clear input buffer only once before starting
         self.ser.reset_input_buffer()
-        self.ser.write(b"P\r")
-        self.ser.flush()
+        try:
+            self.ser.write(b"P\r")
+            self.ser.flush()
+        except (serial.SerialException, OSError) as e:
+            print(f"Write error on {self.name}, reconnecting: {e}")
+            self._reconnect()
+            return None
         
         start_time = time.time()
         last_nudge = start_time
