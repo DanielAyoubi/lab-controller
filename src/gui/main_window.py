@@ -5,9 +5,9 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QGroupBox, QDoubleSpinBox,
-    QFormLayout, QMessageBox, QComboBox, QCheckBox
+    QFormLayout, QMessageBox, QComboBox, QCheckBox, QScrollArea
 )
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, Qt
 
 from src.devices.controller import Controller
 from src.gui.widgets.plot_widget import RealTimePlotWidget
@@ -99,8 +99,8 @@ class MainWindow(QMainWindow):
 
     def _create_left_panel(self):
         panel = QWidget()
-        panel.setFixedWidth(350)
         layout = QVBoxLayout(panel)
+        layout.setContentsMargins(4, 4, 4, 4)
 
         # Connection Status
         conn_group = QGroupBox("Device Connection")
@@ -261,7 +261,13 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.btn_settings)
 
         layout.addStretch()
-        self.main_layout.addWidget(panel)
+
+        scroll = QScrollArea()
+        scroll.setWidget(panel)
+        scroll.setWidgetResizable(True)
+        scroll.setFixedWidth(370)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.main_layout.addWidget(scroll)
 
     def _create_right_panel(self):
         self.plot_widget = RealTimePlotWidget()

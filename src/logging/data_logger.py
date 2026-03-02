@@ -18,10 +18,14 @@ class DataLogger:
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def _generate_filename(self, prefix: Optional[str] = None) -> str:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        now = datetime.now()
+        day_folder = now.strftime("%d_%m_%Y")
+        daily_dir = self.output_dir / day_folder
+        daily_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = now.strftime("%Y%m%d_%H%M%S")
         p = prefix if prefix is not None else self.filename_prefix
         filename = f"{p}_{timestamp}.csv"
-        return str(self.output_dir / filename)
+        return str(daily_dir / filename)
 
     def start_new_log(self, fieldnames: List[str], prefix: Optional[str] = None):
         # Close existing file handle if open
