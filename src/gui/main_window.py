@@ -7,11 +7,11 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QGroupBox, QDoubleSpinBox,
     QFormLayout, QMessageBox, QComboBox, QCheckBox, QScrollArea
 )
-from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtCore import Qt
 
 from src.devices.controller import Controller
 from src.gui.widgets.plot_widget import RealTimePlotWidget
-from src.gui.workers import ExperimentWorker
+from src.gui.workers import ExperimentWorker, PollWorker, FlowRampWorker
 from src.gui.settings_dialog import SettingsDialog
 
 class MainWindow(QMainWindow):
@@ -26,6 +26,8 @@ class MainWindow(QMainWindow):
         # Initialize Controller
         self.controller = Controller(self.config)
         self.experiment_worker: Optional[ExperimentWorker] = None
+        self.poll_worker: Optional[PollWorker] = None
+        self.flow_ramp_worker: Optional[FlowRampWorker] = None
         self.target_chiller_temp: Optional[float] = None
         self._last_plot_path: Optional[str] = None
 
@@ -37,11 +39,6 @@ class MainWindow(QMainWindow):
         self._create_left_panel()
         self._create_right_panel()
 
-        # Timer for periodic polling (read sensors, then update plot)
-        self.update_timer = QTimer()
-        self.update_timer.timeout.connect(self.poll_and_update)
-        # `control_interval` in config is in seconds; QTimer needs milliseconds
-        self.update_timer.start(int(self.config.get('control_interval', 5000)))
 
     def load_config(self, config_path: str) -> dict:
         if not os.path.exists(config_path):
@@ -55,6 +52,18 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"Error loading config: {e}")
         return {}
+
+    def _start_poll_worker(self):
+        interval_ms = int(self.config.get('control_interval', 5000))
+        self.poll_worker = PollWorker(self.controller, interval_ms)
+        self.poll_worker.data_ready.connect(self._on_poll_data)
+        self.poll_worker.start()
+
+    def _stop_poll_worker(self):
+        if self.poll_worker and self.poll_worker.isRunning():
+            self.poll_worker.stop()
+            self.poll_worker.wait()
+        self.poll_worker = None
 
     def open_settings(self):
         dialog = SettingsDialog(self.config, self)
@@ -70,8 +79,9 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'plot_widget'):
                 self.plot_widget.set_max_points(self.config.get('max_plot_points', 500))
             
-            # Update timer interval (convert seconds -> milliseconds)
-            self.update_timer.setInterval(int(self.config.get('control_interval', 5000)))
+            # Update poll interval (takes effect on the next sleep cycle)
+            if self.poll_worker:
+                self.poll_worker.interval_ms = int(self.config.get('control_interval', 5000))
             
             # If ports changed, maybe warn user to reconnect
             QMessageBox.information(self, "Settings Updated", 
@@ -244,6 +254,20 @@ class MainWindow(QMainWindow):
         self.spin_hold_time.setValue(self.config.get('experiment_hold_time', 180.0))
         self.spin_hold_time.setSuffix(" s")
 
+        self.spin_rh_lower = QDoubleSpinBox()
+        self.spin_rh_lower.setDecimals(1)
+        self.spin_rh_lower.setRange(0.0, 100.0)
+        self.spin_rh_lower.setSingleStep(1.0)
+        self.spin_rh_lower.setValue(self.config.get('experiment_rh_lower', 0.0))
+        self.spin_rh_lower.setSuffix(" %")
+
+        self.spin_rh_upper = QDoubleSpinBox()
+        self.spin_rh_upper.setDecimals(1)
+        self.spin_rh_upper.setRange(0.0, 100.0)
+        self.spin_rh_upper.setSingleStep(1.0)
+        self.spin_rh_upper.setValue(self.config.get('experiment_rh_upper', 90.0))
+        self.spin_rh_upper.setSuffix(" %")
+
         self.btn_start_exp = QPushButton("Start Experiment")
         self.btn_start_exp.clicked.connect(self.toggle_experiment)
         self.btn_start_exp.setEnabled(False)
@@ -251,6 +275,8 @@ class MainWindow(QMainWindow):
         exp_layout.addRow("Direction:", self.combo_direction)
         exp_layout.addRow("Step Size (% wet flow):", self.spin_step_size)
         exp_layout.addRow("Step Wait Time:", self.spin_hold_time)
+        exp_layout.addRow("RH Lower Limit:", self.spin_rh_lower)
+        exp_layout.addRow("RH Upper Limit:", self.spin_rh_upper)
         exp_layout.addRow(self.btn_start_exp)
         exp_group.setLayout(exp_layout)
         layout.addWidget(exp_group)
@@ -327,9 +353,13 @@ class MainWindow(QMainWindow):
                         self.controller.logger.start_new_log(self.controller.log_fields)
                     except Exception as e:
                         print(f"Failed to start background log: {e}")
+
+                if any_connected:
+                    self._start_poll_worker()
             except Exception as e:
                 QMessageBox.critical(self, "Error", str(e))
         else:
+            self._stop_poll_worker()
             self.controller.logger.close()
             self.controller.disconnect_devices()
             self.lbl_status.setText("Status: Disconnected")
@@ -352,10 +382,25 @@ class MainWindow(QMainWindow):
     def set_manual_flow(self):
         dry = self.spin_dry.value()
         wet = self.spin_wet.value()
-        try:
-            self.controller.set_flow_rates(dry_flow=dry, wet_flow=wet)
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Failed to set flow: {e}")
+        self.btn_set_flow.setEnabled(False)
+        self._stop_poll_worker()  # avoid concurrent serial access during ramp
+        self.flow_ramp_worker = FlowRampWorker(self.controller, dry, wet)
+        self.flow_ramp_worker.finished.connect(self._on_flow_ramp_finished)
+        self.flow_ramp_worker.error.connect(self._on_flow_ramp_error)
+        self.flow_ramp_worker.start()
+
+    def _on_flow_ramp_finished(self):
+        self.flow_ramp_worker = None
+        self.btn_set_flow.setEnabled(True)
+        if self.controller.is_connected():
+            self._start_poll_worker()
+
+    def _on_flow_ramp_error(self, msg: str):
+        self.flow_ramp_worker = None
+        self.btn_set_flow.setEnabled(True)
+        if self.controller.is_connected():
+            self._start_poll_worker()
+        QMessageBox.warning(self, "Error", f"Failed to set flow: {msg}")
 
     def set_chiller_temp(self):
         temp = self.spin_chiller_temp.value()
@@ -404,14 +449,18 @@ class MainWindow(QMainWindow):
             self.experiment_worker.wait()
             self.btn_start_exp.setText("Start Experiment")
             self.btn_set_flow.setEnabled(True)
-            self.update_timer.start(int(self.config.get('control_interval', 5000)))
+            self._start_poll_worker()
         else:
             # Start experiment — sync UI values into config
             self.config['experiment_direction'] = self.combo_direction.currentText()
             self.config['experiment_step_size'] = self.spin_step_size.value()
             self.config['experiment_hold_time'] = self.spin_hold_time.value()
+            self.config['experiment_rh_lower'] = self.spin_rh_lower.value()
+            self.config['experiment_rh_upper'] = self.spin_rh_upper.value()
             # Close background log; the experiment will open its own CSV
             self.controller.logger.close()
+
+            self._stop_poll_worker()
 
             self.experiment_worker = ExperimentWorker(self.controller, self.config)
             self.experiment_worker.finished.connect(self.on_experiment_finished)
@@ -419,8 +468,6 @@ class MainWindow(QMainWindow):
             self.experiment_worker.progress.connect(self._on_experiment_progress)
             self.experiment_worker.data_ready.connect(self.update_readings)
             self.experiment_worker.start()
-
-            self.update_timer.stop()
 
             self.btn_start_exp.setText("Stop Experiment")
             self.btn_set_flow.setEnabled(False)
@@ -430,7 +477,7 @@ class MainWindow(QMainWindow):
             self._last_plot_path = msg[len("PLOT_PATH:"):]
 
     def on_experiment_finished(self):
-        self.update_timer.start(int(self.config.get('control_interval', 5000)))
+        self._start_poll_worker()
         self.btn_start_exp.setText("Start Experiment")
         self.btn_set_flow.setEnabled(True)
 
@@ -449,35 +496,29 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Experiment", msg)
 
     def on_experiment_error(self, msg):
-        self.update_timer.start(int(self.config.get('control_interval', 5000)))
+        self._start_poll_worker()
         self.btn_start_exp.setText("Start Experiment")
         self.btn_set_flow.setEnabled(True)
         self._last_plot_path = None
         QMessageBox.critical(self, "Experiment Error", msg)
 
-    def poll_and_update(self):
+    def _on_poll_data(self, data: dict):
         try:
-            if self.controller.is_connected():
-                data = self.controller.read_and_log()
-
-                # Prefer chiller RH, fall back to hygrometer RH
-                curr_rh = data.get('rh_chiller') or data.get('rh_hygrometer')
-
-                if self.controller.rh_control_active:
-                    self.controller.update_rh_control_loop(curr_rh)
-                    status = self.controller.get_rh_control_status(curr_rh)
-                    self.lbl_rh_pid_status.setText(status)
-                    if "Settling" in status:
-                        self.lbl_rh_pid_status.setStyleSheet("color: orange")
-                    elif "At target" in status:
-                        self.lbl_rh_pid_status.setStyleSheet("color: green")
-                    else:
-                        self.lbl_rh_pid_status.setStyleSheet("color: blue")
+            curr_rh = data.get('rh_chiller') or data.get('rh_hygrometer')
+            if self.controller.rh_control_active:
+                self.controller.update_rh_control_loop(curr_rh)
+                status = self.controller.get_rh_control_status(curr_rh)
+                self.lbl_rh_pid_status.setText(status)
+                if "Settling" in status:
+                    self.lbl_rh_pid_status.setStyleSheet("color: orange")
+                elif "At target" in status:
+                    self.lbl_rh_pid_status.setStyleSheet("color: green")
                 else:
-                    self.lbl_rh_pid_status.setText("Inactive")
-                    self.lbl_rh_pid_status.setStyleSheet("color: gray")
-
-                self.update_readings(data)
+                    self.lbl_rh_pid_status.setStyleSheet("color: blue")
+            else:
+                self.lbl_rh_pid_status.setText("Inactive")
+                self.lbl_rh_pid_status.setStyleSheet("color: gray")
+            self.update_readings(data)
         except Exception:
             pass
 

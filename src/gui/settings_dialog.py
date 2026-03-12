@@ -183,6 +183,27 @@ class SettingsDialog(QDialog):
         self.rh_derivative_filter_tau.setSuffix(" s")
         layout.addRow("D filter τ:", self.rh_derivative_filter_tau)
 
+        # ── Pre-conditioning stability ───────────────────────────────────────
+        from PyQt6.QtWidgets import QLabel
+        layout.addRow(QLabel("── Pre-conditioning stability ──"))
+
+        self.experiment_stability_readings = QSpinBox()
+        self.experiment_stability_readings.setRange(1, 20)
+        self.experiment_stability_readings.setValue(
+            int(self.config.get("experiment_stability_readings", 5))
+        )
+        layout.addRow("Stability readings (N in-deadband):", self.experiment_stability_readings)
+
+        self.experiment_stability_timeout = QDoubleSpinBox()
+        self.experiment_stability_timeout.setDecimals(0)
+        self.experiment_stability_timeout.setRange(60.0, 3600.0)
+        self.experiment_stability_timeout.setSingleStep(30.0)
+        self.experiment_stability_timeout.setValue(
+            float(self.config.get("experiment_stability_timeout", 600.0))
+        )
+        self.experiment_stability_timeout.setSuffix(" s")
+        layout.addRow("Stability timeout:", self.experiment_stability_timeout)
+
         self.tabs.addTab(tab, "Experiment")
 
     def get_settings(self):
@@ -211,4 +232,6 @@ class SettingsDialog(QDialog):
             "rh_ki": self.rh_ki.value(),
             "rh_kd": self.rh_kd.value(),
             "rh_derivative_filter_tau": self.rh_derivative_filter_tau.value(),
+            "experiment_stability_readings": self.experiment_stability_readings.value(),
+            "experiment_stability_timeout": self.experiment_stability_timeout.value(),
         }

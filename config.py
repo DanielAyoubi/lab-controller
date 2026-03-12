@@ -29,6 +29,18 @@ CONFIG = {
     "experiment_hold_time": 180.0,  # Seconds to wait at each flow step before advancing
     "max_flow": 2.0,  # Maximum/target total flow rate (dry + wet) in L/min
     "control_interval": 5000,  # Update interval in milliseconds
+    # RH interval / pre-conditioning
+    # rh_lower: lower bound of the RH interval. For "up" experiments this is the
+    # pre-conditioning target; 0.0 = set dry-only flow and wait for equilibration.
+    "experiment_rh_lower": 0.0,
+    # rh_upper: upper bound of the RH interval. For "down" experiments this is the
+    # pre-conditioning target. Set below 100 if the cell cannot reach 100% RH
+    # (typically requires chiller ≤ 15 °C).
+    "experiment_rh_upper": 90.0,
+    # stability_readings: consecutive readings within ±deadband to declare stable.
+    "experiment_stability_readings": 5,
+    # stability_timeout: max seconds to wait for stability before proceeding anyway.
+    "experiment_stability_timeout": 600.0,
     # RH PI controller tuning
     # settling_time: maximum seconds to wait after a full-scale flow change (e.g. 0 → max_flow).
     # The actual wait scales linearly with the size of each step; the lower bound is
