@@ -1,6 +1,6 @@
 # N-SIM Environmental Control System
 
-A PyQt6 desktop application for controlling the environmental humidity chamber of an N-SIM microscope. It manages two Vögtlin mass flow controllers (dry/wet air), a DewMaster chilled-mirror hygrometer, and a Julabo chiller to regulate relative humidity (RH).
+A desktop application for controlling the environmental humidity chamber of an N-SIM microscope. It manages two Vögtlin mass flow controllers (dry/wet air), a DewMaster chilled-mirror hygrometer, and a Julabo chiller to regulate relative humidity (RH).
 
 ## Features
 
@@ -36,7 +36,7 @@ A PyQt6 desktop application for controlling the environmental humidity chamber o
 
    Copy the template and edit it for this machine:
    ```
-   copy src\configs\local_config.example.py src\configs\local_config.py
+   cp src\configs\local_config.example.py src\configs\local_config.py
    ```
    Then open `src/configs/local_config.py` and fill in the correct values:
    ```python
@@ -102,8 +102,8 @@ Settings can also be changed at runtime through the **Settings** dialog (General
 | `experiment_rh_lower` / `experiment_rh_upper` | 0 / 90 % | RH limits for experiment stop and pre-conditioning |
 | `rh_kp` / `rh_ki` / `rh_kd` | 0.02 / 0.001 / 0.05 | PID gains (set `rh_kd = 0` to disable D term) |
 | `rh_deadband` | 1.0 % | Minimum RH error that triggers a correction |
-| `rh_settling_time` | 180 s | Max wait after a full-scale flow change |
-| `rh_settling_time_min` | 5 s | Min wait regardless of step size |
+| `rh_settling_time` | 200 s | Max wait after a full-scale flow change |
+| `rh_settling_time_min` | 30 s | Min wait regardless of step size |
 | `rh_max_step` | 0.05 | Wet-ratio change ceiling at 100 % error |
 
 ## Project Structure
@@ -152,17 +152,11 @@ CSV files are written to `<log_dir>/<DD_MM_YYYY>/<prefix>_<timestamp>.csv`. Colu
 | `hygrometer_temp` | Hygrometer ambient temperature (°C) |
 | `dewpoint_temp` | Dew-point temperature (°C) |
 | `rh_hygrometer` | RH computed from hygrometer ambient temp |
-| `rh_chiller` | RH computed from chiller external probe temp (preferred during experiments) |
+| `rh_chiller` | RH computed from chiller external probe temp |
 | `chiller_temp` | Chiller external probe temperature (°C) |
 | `chiller_setpoint` | Chiller temperature setpoint (°C) |
 
 At experiment end a smoothed PNG summary plot is saved alongside the CSV.
-
-## Running Tests
-
-```
-.venv\Scripts\pytest tests/
-```
 
 ## Device Protocols
 
