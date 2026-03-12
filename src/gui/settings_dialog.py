@@ -81,7 +81,10 @@ class SettingsDialog(QDialog):
         
         self.hygrometer_port = QLineEdit(self.config.get("hygrometer_port", "COM9"))
         layout.addRow("Hygrometer Port:", self.hygrometer_port)
-        
+
+        self.chiller_port = QLineEdit(self.config.get("chiller_port", "COM8"))
+        layout.addRow("Chiller Port:", self.chiller_port)
+
         self.mfc_baudrate = QSpinBox()
         self.mfc_baudrate.setRange(1200, 115200)
         self.mfc_baudrate.setValue(self.config.get("mfc_baudrate", 9600))
@@ -91,7 +94,12 @@ class SettingsDialog(QDialog):
         self.hygrometer_baudrate.setRange(1200, 115200)
         self.hygrometer_baudrate.setValue(self.config.get("hygrometer_baudrate", 19200))
         layout.addRow("Hygrometer Baudrate:", self.hygrometer_baudrate)
-        
+
+        self.chiller_baudrate = QSpinBox()
+        self.chiller_baudrate.setRange(1200, 115200)
+        self.chiller_baudrate.setValue(self.config.get("chiller_baudrate", 9600))
+        layout.addRow("Chiller Baudrate:", self.chiller_baudrate)
+
         self.tabs.addTab(tab, "Devices")
 
     def _create_experiment_tab(self):
@@ -219,8 +227,10 @@ class SettingsDialog(QDialog):
             "dry_mfc_port": self.dry_mfc_port.text(),
             "wet_mfc_port": self.wet_mfc_port.text(),
             "hygrometer_port": self.hygrometer_port.text(),
+            "chiller_port": self.chiller_port.text(),
             "mfc_baudrate": self.mfc_baudrate.value(),
             "hygrometer_baudrate": self.hygrometer_baudrate.value(),
+            "chiller_baudrate": self.chiller_baudrate.value(),
             "experiment_step_size": self.experiment_step_size.value(),
             "experiment_hold_time": self.experiment_hold_time.value(),
             "max_flow": self.max_flow.value(),

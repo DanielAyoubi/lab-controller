@@ -21,8 +21,8 @@ class PollWorker(QThread):
             try:
                 data = self.controller.read_and_log()
                 self.data_ready.emit(data)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"PollWorker error: {e}")
             # Sleep in small chunks so stop() is responsive
             deadline = t0 + self.interval_ms / 1000.0
             while self._running and time.monotonic() < deadline:

@@ -1,13 +1,14 @@
-import math
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Callable, Dict, Optional
 
 from src.devices.chiller import JulaboChiller
 from src.devices.hygrometer import Hygrometer
+from src.devices.pid_controller import RhPidController
 from src.devices.vogtlin_mfc import VogtlinMFC
-from src.logging.data_logger import DataLogger
+from src.utility.data_logger import DataLogger
+from src.utility.plot_saver import save_experiment_plot
+from src.utility.compute_RH import compute_relative_humidity
 
 
 class Controller:
@@ -43,26 +44,7 @@ class Controller:
         self.rh_control_active = False
         self.rh_setpoint = 50.0
         self.rh_control_total_flow = 2.0
-        self.rh_params = self._build_rh_params()
-        self.pid_state = {
-            "integral": 0.0,
-            "last_time": time.time(),
-            "last_adjustment_time": 0.0,
-        }
-
-    def _build_rh_params(self) -> dict:
-        return {
-            "Kp": self.config.get("rh_kp", 0.02),
-            "Ki": self.config.get("rh_ki", 0.001),
-            "Kd": self.config.get("rh_kd", 0.0),
-            "derivative_filter_tau": self.config.get("rh_derivative_filter_tau", 30.0),
-            "integral_limit": self.config.get("rh_integral_limit", 0.5),
-            "settling_time": self.config.get("rh_settling_time", 180.0),
-            "settling_time_min": self.config.get("rh_settling_time_min", 5.0),
-            "max_flow": self.config.get("max_flow", 2.0),
-            "deadband": self.config.get("rh_deadband", 1.0),
-            "max_step": self.config.get("rh_max_step", 0.05),
-        }
+        self.pid = RhPidController(config)
 
     # ── Connection ───────────────────────────────────────────────────────────
 
@@ -81,7 +63,7 @@ class Controller:
         if cfg.get("wet_mfc_enabled") and "wet_mfc_port" in cfg:
             self.wet_mfc = VogtlinMFC(
                 port=cfg["wet_mfc_port"],
-                address=cfg.get("wet_mfc_address", 2),
+                address=cfg.get("wet_mfc_address", 247),
                 name="Wet Air MFC",
             )
             results["wet_mfc"] = self._connect_device(self.wet_mfc, "wet MFC")
@@ -157,10 +139,7 @@ class Controller:
             try:
                 readings = self.hygrometer.get_readings()
                 if readings:
-                    ht = readings.get("hygrometer_temp")
-                    data["hygrometer_temp"] = (
-                        ht if ht is not None else readings.get("ambient_temp")
-                    )
+                    data["hygrometer_temp"] = readings.get("hygrometer_temp")
                     data["dewpoint_temp"] = readings.get("dewpoint_temp")
             except Exception as e:
                 print(f"Error reading hygrometer: {e}")
@@ -175,54 +154,27 @@ class Controller:
         if self.hygrometer and data["dewpoint_temp"] is not None:
             dp = data["dewpoint_temp"]
             if data["hygrometer_temp"] is not None:
-                data["rh_hygrometer"] = self._compute_rh(dp, data["hygrometer_temp"])
+                data["rh_hygrometer"] = compute_relative_humidity(dp=dp, t=data["hygrometer_temp"])
             if data["chiller_temp"] is not None:
-                data["rh_chiller"] = self._compute_rh(dp, data["chiller_temp"])
+                data["rh_chiller"] = compute_relative_humidity(dp=dp, t=data["chiller_temp"])
 
         return data
 
     def read_and_log(self, on_data: Optional[Callable[[Dict], None]] = None) -> Dict:
-        try:
-            data = self.read_all_sensors()
-        except Exception as e:
-            print(f"Error reading sensors: {e}")
-            data = {}
-
+        data = self.read_all_sensors()
         if self.logger.is_logging():
             try:
                 self.logger.log_data(data)
             except Exception as e:
                 print(f"Logger error: {e}")
-
         if on_data:
             try:
                 on_data(data)
-            except Exception as e:
-                print(f"Callback error: {e}")
+            except Exception:
+                pass
         return data
 
-    def wait_and_log(
-        self,
-        duration: float,
-        on_data: Optional[Callable[[Dict], None]] = None,
-        interval: float = 1.0,
-    ):
-        start = time.time()
-        while (time.time() - start) < duration and self.running:
-            cycle_start = time.time()
-            self.read_and_log(on_data)
-            elapsed = time.time() - cycle_start
-            if elapsed < interval:
-                time.sleep(interval - elapsed)
-
-    def _compute_rh(self, dewpoint: float, temp: float) -> Optional[float]:
-        try:
-            val = self.hygrometer.compute_relative_humidity(dp=dewpoint, t=temp)
-            return val if (val is not None and math.isfinite(val)) else None
-        except Exception as e:
-            print(f"Error computing RH (dp={dewpoint:.1f}, t={temp:.1f}): {e}")
-            return None
-
+        
     # ── Flow Control ─────────────────────────────────────────────────────────
 
     def set_flow_rates(
@@ -258,24 +210,18 @@ class Controller:
                 success = False
         return success
 
-    def set_chiller_temperature(self, temperature: float):
-        if not self.chiller:
-            print("Chiller not connected")
-            return
-        self.chiller.set_setpoint_temperature(temperature)
-        self.chiller.start_control()
-        print(f"Chiller setpoint set to {temperature:.2f} °C")
+
+    def get_current_flows(self) -> tuple:
+        return (
+            self.dry_mfc.get_setpoint() if self.dry_mfc else 0.0,
+            self.wet_mfc.get_setpoint() if self.wet_mfc else 0.0,
+        )
 
     def _ramp_flows(self, dry_flow: Optional[float], wet_flow: Optional[float]):
-        current_dry = self.dry_mfc.get_setpoint() if self.dry_mfc else 0.0
-        current_wet = self.wet_mfc.get_setpoint() if self.wet_mfc else 0.0
+        current_dry, current_wet = self.get_current_flows()
 
-        dry_diff = (
-            (dry_flow - current_dry) if (dry_flow is not None and self.dry_mfc) else 0.0
-        )
-        wet_diff = (
-            (wet_flow - current_wet) if (wet_flow is not None and self.wet_mfc) else 0.0
-        )
+        dry_diff = (dry_flow - current_dry) if (dry_flow is not None and self.dry_mfc) else 0.0
+        wet_diff = (wet_flow - current_wet) if (wet_flow is not None and self.wet_mfc) else 0.0
 
         max_delta = max(abs(dry_diff), abs(wet_diff))
         step_size = 0.05  # L/min
@@ -312,26 +258,23 @@ class Controller:
             self.rh_setpoint = target
         if total_flow is not None:
             self.rh_control_total_flow = total_flow
-        self.rh_params = self._build_rh_params()
+        self.pid.update_params(self.config)
+        self.pid.reset()
         self.rh_control_active = True
-        # last_adjustment_time=0.0 so the first correction fires immediately
-        self.pid_state = {
-            "integral": 0.0,
-            "last_time": time.time(),
-            "last_adjustment_time": 0.0,
-        }
+        p = self.pid.params
         print(
             f"RH Control Activated: Target={self.rh_setpoint}%, Flow={self.rh_control_total_flow} L/min, "
-            f"settling {self.rh_params['settling_time_min']:.0f}–{self.rh_params['settling_time']:.0f}s "
-            f"(dynamic), deadband=±{self.rh_params['deadband']}%"
+            f"settling {p['settling_time_min']:.0f}–{p['settling_time']:.0f}s "
+            f"(dynamic), deadband=±{p['deadband']}%"
         )
 
     def update_rh_control_loop(self, current_rh: Optional[float]):
         if not self.rh_control_active or current_rh is None:
             return
 
-        new_wet_ratio = self._compute_wet_ratio_pid(
-            self.rh_setpoint, current_rh, self.pid_state
+        curr_dry, curr_wet = self.get_current_flows()
+        new_wet_ratio = self.pid.compute(
+            self.rh_setpoint, current_rh, curr_dry, curr_wet, self.rh_control_total_flow
         )
         if new_wet_ratio is None:
             return
@@ -344,154 +287,16 @@ class Controller:
             ramp_flow=False,
         )
         if success:
-            self.pid_state["last_adjustment_time"] = time.time()
+            self.pid.state.last_adjustment_time = time.time()
 
     def get_rh_control_status(self, current_rh: Optional[float] = None) -> str:
-        """Return a human-readable status string for the RH control loop.
-
-        Includes the RH value the controller is currently acting on so the user
-        can spot a mismatch between the displayed reading and the control reading
-        (e.g. rh_chiller vs rh_hygrometer giving different values).
-        """
         if not self.rh_control_active:
             return "Inactive"
-        now = time.time()
-        dyn_settling = self.pid_state.get(
-            "dynamic_settling_time", self.rh_params["settling_time"]
-        )
-        remaining = dyn_settling - (
-            now - self.pid_state.get("last_adjustment_time", 0.0)
-        )
-        rh_str = f"{current_rh:.1f}%" if current_rh is not None else "N/A"
-        if remaining > 0:
-            return f"Settling ({remaining:.0f}s) | {rh_str}"
-        if current_rh is not None:
-            error = self.rh_setpoint - current_rh
-            if abs(error) < self.rh_params["deadband"]:
-                return f"At target | {rh_str}"
-            return f"Adjusting (err={error:+.1f}%) | {rh_str}"
-        return f"Active | {rh_str}"
-
-    def _compute_wet_ratio_pid(
-        self, target_rh: float, current_rh: float, pid_state: Dict
-    ) -> Optional[float]:
-        """Run one PID step; returns the new wet flow ratio, or None if no update needed.
-
-        Three guards enforce patience appropriate for this slow physical system:
-          - settling_time: minimum seconds between flow adjustments so the gas mixture
-            in the tubing and the dew-point mirror have time to equilibrate.
-          - deadband: ignore errors smaller than this (±%) to avoid chasing sensor noise.
-          - max_step: clamp the wet-ratio change per adjustment to prevent large jumps.
-
-        D term implementation notes:
-          - "D on measurement" (not on error): avoids a derivative spike when the
-            setpoint changes between experiment steps.
-          - Measurement tracking updates every call (including during settling) so the
-            filtered derivative is fresh when the PI is finally allowed to fire.
-          - First-order low-pass filter with time constant `derivative_filter_tau`
-            attenuates high-frequency noise from the dew-point mirror.
-          - Set Kd = 0 to disable the D term entirely (backward-compatible default).
-        """
-        now = time.time()
-
-        # --- D on measurement: update derivative tracking every call ─────────
-        # Using a separate measurement-time clock so the derivative reflects the
-        # true polling interval rather than the (stretched) PI interval.
-        kd = self.rh_params["Kd"]
-        dt_meas = now - pid_state.get("last_meas_time", now)
-        if kd > 0.0 and dt_meas > 0.5:
-            d_raw = (current_rh - pid_state.get("prev_rh", current_rh)) / dt_meas
-            tau_d = max(self.rh_params["derivative_filter_tau"], 1.0)
-            alpha = dt_meas / (tau_d + dt_meas)  # first-order low-pass
-            pid_state["filtered_d"] = (1.0 - alpha) * pid_state.get(
-                "filtered_d", 0.0
-            ) + alpha * d_raw
-        pid_state["prev_rh"] = current_rh
-        pid_state["last_meas_time"] = now
-
-        # --- Settling guard: wait after each flow change ─────────────────────
-        # Use the dynamic settling time stored when the last adjustment was made.
-        # On the very first call (last_adjustment_time=0) the guard never fires.
-        settling_time = pid_state.get(
-            "dynamic_settling_time", self.rh_params["settling_time"]
-        )
-        remaining = settling_time - (now - pid_state.get("last_adjustment_time", 0.0))
-        if remaining > 0:
-            pid_state["last_time"] = now  # prevent dt from ballooning
-            return None
-
-        dt = now - pid_state["last_time"]
-        if dt < 1.0:
-            return None
-
-        error = target_rh - current_rh
-
-        # --- Deadband: ignore small errors ───────────────────────────────────
-        if abs(error) < self.rh_params["deadband"]:
-            pid_state["last_time"] = now
-            pid_state["integral"] = 0.0  # bleed integral while on target
-            return None
-
-        # --- P term ──────────────────────────────────────────────────────────
-        p_term = self.rh_params["Kp"] * error
-
-        # --- I term ──────────────────────────────────────────────────────────
-        ki = self.rh_params["Ki"]
-        pid_state["integral"] += error * dt
-        limit = self.rh_params["integral_limit"] / ki if ki > 0 else 0.0
-        pid_state["integral"] = max(-limit, min(limit, pid_state["integral"]))
-        i_term = ki * pid_state["integral"]
-
-        # --- D term (filtered, D on measurement) ─────────────────────────────
-        # Negative sign: when measurement rises toward the setpoint, d_filtered > 0,
-        # so d_term < 0 — this damps the approach and reduces overshoot.
-        d_term = -kd * pid_state.get("filtered_d", 0.0) if kd > 0.0 else 0.0
-
-        output_change = p_term + i_term + d_term
-
-        # --- Dynamic step clamp (Newton-like convergence) ─────────────────────
-        # The allowed wet-ratio change scales linearly with |error|, so the
-        # controller takes large strides when far from the setpoint and
-        # automatically feathers down to very small adjustments as it converges.
-        # rh_max_step is the ceiling when |error| = 100 %; it shrinks to near
-        # zero as the measurement approaches the target.
-        dynamic_max_step = self.rh_params["max_step"] * (abs(error) / 100.0)
-        output_change = max(-dynamic_max_step, min(dynamic_max_step, output_change))
-
-        pid_state["last_time"] = now
-
-        if abs(output_change) <= 0.0001:
-            return None
-
-        curr_dry_sp = self.dry_mfc.get_setpoint() if self.dry_mfc else 0.0
-        curr_wet_sp = self.wet_mfc.get_setpoint() if self.wet_mfc else 0.0
-        total_sp = curr_dry_sp + curr_wet_sp
-
-        if total_sp <= 0.01:
-            new_wet_ratio = max(0.0, min(1.0, target_rh / 100.0))
-        else:
-            new_wet_ratio = max(0.0, min(1.0, curr_wet_sp / total_sp + output_change))
-
-        # --- Dynamic settling time ───────────────────────────────────────────
-        # Scale the next settling wait proportionally to the size of this flow
-        # change: full-scale step (0 → max_flow on each MFC) → settling_time,
-        # near-zero step → settling_time_min.
-        new_dry_sp = (1.0 - new_wet_ratio) * self.rh_control_total_flow
-        new_wet_sp = new_wet_ratio * self.rh_control_total_flow
-        delta = abs(new_dry_sp - curr_dry_sp) + abs(new_wet_sp - curr_wet_sp)
-        ref = max(0.01, self.rh_params["max_flow"])  # reference = max_flow from config
-        t_min = self.rh_params["settling_time_min"]
-        t_max = self.rh_params["settling_time"]
-        pid_state["dynamic_settling_time"] = t_min + (t_max - t_min) * min(
-            1.0, delta / ref
-        )
-
-        return new_wet_ratio
+        return self.pid.get_status(self.rh_setpoint, current_rh)
 
     # ── Experiment ───────────────────────────────────────────────────────────
 
-    def run_automated_experiment(
-        self,
+    def run_automated_experiment(self,
         direction: str,
         step_size: float,
         max_flow: float,
@@ -504,6 +309,7 @@ class Controller:
         on_data: Optional[Callable[[Dict], None]] = None,
         on_progress: Optional[Callable[[str], None]] = None,
     ) -> Optional[str]:
+
         self.running = True
         step_times: list = []
 
@@ -520,17 +326,12 @@ class Controller:
             going_up = direction.lower() == "up"
             precond_target = rh_lower if going_up else rh_upper
 
-            self.rh_params = self._build_rh_params()
-            deadband = self.rh_params["deadband"]
+            deadband = self.pid.params["deadband"]
             dry_only_precond = going_up and rh_lower == 0.0
 
             if dry_only_precond:
-                # Case A: target is 0% RH — just set all-dry flow and wait.
                 self.set_flow_rates(
-                    dry_flow=max_flow,
-                    wet_flow=0.0,
-                    max_flow=max_flow,
-                    ramp_flow=False,
+                    dry_flow=max_flow, wet_flow=0.0, max_flow=max_flow, ramp_flow=False
                 )
                 print(
                     f"\n── Pre-conditioning: 0% RH (dry-only flow, "
@@ -538,18 +339,13 @@ class Controller:
                     f"< {deadband:.1f}%, timeout {stability_timeout:.0f}s) ──"
                 )
             else:
-                # Case B/C: use PID to reach precond_target.
                 print(
                     f"\n── Pre-conditioning: targeting {precond_target:.1f}% RH "
                     f"(stable when {stability_readings} consecutive readings "
                     f"within ±{deadband:.1f}%, timeout {stability_timeout:.0f}s) ──"
                 )
 
-            pid_state: Dict = {
-                "integral": 0.0,
-                "last_time": time.time(),
-                "last_adjustment_time": 0.0,
-            }
+            precondpid = RhPidController(self.config)
             stable_count = 0
             phase_start = time.time()
 
@@ -562,26 +358,14 @@ class Controller:
                     break
 
                 cycle_start = time.time()
-                data = self.read_all_sensors()
-                if self.logger.is_logging():
-                    try:
-                        self.logger.log_data(data)
-                    except Exception as e:
-                        print(f"Logger error: {e}")
-                if on_data:
-                    try:
-                        on_data(data)
-                    except Exception:
-                        pass
-
-                current_rh: Optional[float] = data.get("rh_chiller") or data.get(
-                    "rh_hygrometer"
-                )
+                data = self.read_and_log(on_data)
+                current_rh: Optional[float] = data.get("rh_chiller") if data.get("rh_chiller") is not None else data.get("rh_hygrometer")
 
                 if current_rh is not None:
                     if not dry_only_precond:
-                        new_wet_ratio = self._compute_wet_ratio_pid(
-                            precond_target, current_rh, pid_state
+                        curr_dry, curr_wet = self.get_current_flows()
+                        new_wet_ratio = precondpid.compute(
+                            precond_target, current_rh, curr_dry, curr_wet, max_flow
                         )
                         if new_wet_ratio is not None:
                             self.set_flow_rates(
@@ -590,14 +374,13 @@ class Controller:
                                 max_flow=max_flow,
                                 ramp_flow=False,
                             )
-                            pid_state["last_adjustment_time"] = time.time()
+                            precondpid.state.last_adjustment_time = time.time()
 
-                    # Stability check
-                    if dry_only_precond:
-                        is_stable = current_rh < deadband
-                    else:
-                        is_stable = abs(current_rh - precond_target) < deadband
-
+                    is_stable = (
+                        current_rh < deadband
+                        if dry_only_precond
+                        else abs(current_rh - precond_target) < deadband
+                    )
                     stable_count = stable_count + 1 if is_stable else 0
 
                     msg = (
@@ -620,25 +403,20 @@ class Controller:
                     time.sleep(sleep_time)
 
             # ── Phase 2: Flow-ratio ramp ──────────────────────────────────────
-            # Build the full wet-flow ratio sequence (0.0 … 1.0), then trim it
-            # to start one step ahead of wherever pre-conditioning left us.
             n_steps = int(round(100.0 / step_size))
             if going_up:
                 ratios = [min(1.0, i * step_size / 100.0) for i in range(n_steps + 1)]
                 if abs(ratios[-1] - 1.0) > 0.001:
                     ratios.append(1.0)
             else:
-                ratios = [
-                    max(0.0, 1.0 - i * step_size / 100.0) for i in range(n_steps + 1)
-                ]
+                ratios = [max(0.0, 1.0 - i * step_size / 100.0) for i in range(n_steps + 1)]
                 if abs(ratios[-1]) > 0.001:
                     ratios.append(0.0)
 
             # Trim to start ahead of the pre-conditioned flow position
-            curr_dry_sp = self.dry_mfc.get_setpoint() if self.dry_mfc else 0.0
-            curr_wet_sp = self.wet_mfc.get_setpoint() if self.wet_mfc else 0.0
-            total_sp = curr_dry_sp + curr_wet_sp
-            current_wet_ratio = curr_wet_sp / total_sp if total_sp > 0.01 else 0.0
+            curr_dry, curr_wet = self.get_current_flows()
+            total_sp = curr_dry + curr_wet
+            current_wet_ratio = curr_wet / total_sp if total_sp > 0.01 else 0.0
             step_frac = step_size / 100.0
             if going_up:
                 ratios = [r for r in ratios if r >= current_wet_ratio + step_frac]
@@ -668,33 +446,16 @@ class Controller:
                 )
 
                 self.set_flow_rates(
-                    dry_flow=dry_flow,
-                    wet_flow=wet_flow,
-                    max_flow=max_flow,
-                    ramp_flow=False,
+                    dry_flow=dry_flow, wet_flow=wet_flow, max_flow=max_flow, ramp_flow=False
                 )
                 step_times.append(datetime.now())
 
-                # Wait hold_time seconds, polling at control_interval
                 elapsed = 0.0
                 while elapsed < hold_time and self.running:
                     cycle_start = time.time()
-                    data = self.read_all_sensors()
-                    if self.logger.is_logging():
-                        try:
-                            self.logger.log_data(data)
-                        except Exception as e:
-                            print(f"Logger error: {e}")
-                    if on_data:
-                        try:
-                            on_data(data)
-                        except Exception:
-                            pass
+                    data = self.read_and_log(on_data)
 
-                    # RH interval early-stop check
-                    meas_rh: Optional[float] = data.get("rh_chiller") or data.get(
-                        "rh_hygrometer"
-                    )
+                    meas_rh: Optional[float] = data.get("rh_chiller") if data.get("rh_chiller") is not None else data.get("rh_hygrometer")
                     if meas_rh is not None:
                         if going_up and meas_rh >= rh_upper:
                             print(
@@ -722,130 +483,10 @@ class Controller:
 
             plot_path = None
             try:
-                plot_path = self._save_experiment_plot(csv_path, step_times)
+                plot_path = save_experiment_plot(csv_path, step_times, self.logger)
             except Exception as e:
                 print(f"Failed to save experiment plot: {e}")
             print("Experiment finished.")
 
         return plot_path
 
-    def _save_experiment_plot(
-        self, csv_path: Optional[str], step_times: list
-    ) -> Optional[str]:
-        import matplotlib.dates as mdates
-        import numpy as np
-        from matplotlib.backends.backend_agg import FigureCanvasAgg
-        from matplotlib.figure import Figure
-
-        if not csv_path:
-            return None
-
-        rows = self.logger.read_log(csv_path)
-        if not rows:
-            return None
-
-        # Parse CSV rows (all values arrive as strings from DictReader)
-        def _to_float(v):
-            try:
-                return float(v)
-            except (TypeError, ValueError):
-                return None
-
-        timestamps, dry_flows, wet_flows = [], [], []
-        hyg_temps, chill_temps = [], []
-        rh_hyg, rh_chill = [], []
-
-        for row in rows:
-            try:
-                t = datetime.fromisoformat(row["timestamp"])
-            except (KeyError, ValueError, TypeError):
-                continue
-            timestamps.append(t)
-            dry_flows.append(_to_float(row.get("dry_flow")))
-            wet_flows.append(_to_float(row.get("wet_flow")))
-            hyg_temps.append(_to_float(row.get("hygrometer_temp")))
-            chill_temps.append(_to_float(row.get("chiller_temp")))
-            rh_hyg.append(_to_float(row.get("rh_hygrometer")))
-            rh_chill.append(_to_float(row.get("rh_chiller")))
-
-        if not timestamps:
-            return None
-
-        # Auto-scale smoothing window: roughly 1/30th of total points, min 5
-        window = max(5, len(timestamps) // 30)
-
-        def _smooth(values):
-            """Moving-average via convolution; 'same' preserves array length."""
-            arr = np.array(values, dtype=float)
-            kernel = np.ones(window) / window
-            return np.convolve(arr, kernel, mode="same")
-
-        def _plot_series_with_smooth(ax, ts_list, vals, label, color):
-            """Plot raw (transparent) then smoothed (opaque) for one channel."""
-            pairs = [(t, v) for t, v in zip(ts_list, vals) if v is not None]
-            if not pairs:
-                return
-            ts, vs = zip(*pairs)
-            vs_arr = list(vs)
-            # Raw data — semi-transparent thin line
-            ax.plot(ts, vs_arr, color=color, linewidth=0.8, alpha=0.25)
-            # Smoothed overlay — full opacity
-            smoothed = _smooth(vs_arr)
-            ax.plot(ts, smoothed, label=label, color=color, linewidth=1.8, alpha=1.0)
-
-        fig = Figure(figsize=(12, 8))
-        FigureCanvasAgg(fig)
-        ax0 = fig.add_subplot(3, 1, 1)
-        ax1 = fig.add_subplot(3, 1, 2, sharex=ax0)
-        ax2 = fig.add_subplot(3, 1, 3, sharex=ax0)
-
-        fig.suptitle(f"RH Ramp Experiment — {timestamps[0].strftime('%Y-%m-%d %H:%M')}")
-
-        # Step-change markers on all axes
-        for ax in (ax0, ax1, ax2):
-            for st in step_times:
-                ax.axvline(st, color="gray", linestyle="--", linewidth=0.7, alpha=0.6)
-
-        _plot_series_with_smooth(ax0, timestamps, dry_flows, "Dry flow", "steelblue")
-        _plot_series_with_smooth(ax0, timestamps, wet_flows, "Wet flow", "darkorange")
-        ax0.set_ylabel("Flow rate (L/min)")
-        ax0.legend(loc="upper right", fontsize=8)
-        ax0.grid(True, alpha=0.3)
-
-        _plot_series_with_smooth(
-            ax1, timestamps, hyg_temps, "Hygrometer temp", "darkorange"
-        )
-        _plot_series_with_smooth(
-            ax1, timestamps, chill_temps, "Chiller temp", "firebrick"
-        )
-        ax1.set_ylabel("Temperature (°C)")
-        ax1.legend(loc="upper right", fontsize=8)
-        ax1.grid(True, alpha=0.3)
-
-        _plot_series_with_smooth(
-            ax2, timestamps, rh_hyg, "RH (hygrometer)", "mediumpurple"
-        )
-        _plot_series_with_smooth(ax2, timestamps, rh_chill, "RH (chiller)", "royalblue")
-        ax2.set_ylabel("Relative humidity (%)")
-        ax2.set_xlabel("Time")
-        ax2.legend(loc="upper right", fontsize=8)
-        ax2.grid(True, alpha=0.3)
-
-        ax2.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
-        fig.autofmt_xdate()
-        fig.tight_layout()
-
-        # Save PNG alongside the CSV (same stem, different extension)
-        plot_path = Path(csv_path).with_suffix(".png")
-        fig.savefig(str(plot_path), dpi=150, bbox_inches="tight")
-        print(f"Experiment plot saved: {plot_path}")
-        return str(plot_path)
-
-    # ── Settings ─────────────────────────────────────────────────────────────
-
-    def update_settings(self, new_config: Dict):
-        self.config.update(new_config)
-        self.logger.output_dir = Path(self.config.get("log_dir", "data"))
-        self.logger.filename_prefix = self.config.get("log_prefix", "nsim_log")
-        self.logger.output_dir.mkdir(parents=True, exist_ok=True)
-        self.rh_params = self._build_rh_params()

@@ -42,7 +42,6 @@ class Hygrometer:
         return self.connected
 
     def _reconnect(self):
-        """Close and reopen the serial port after a write failure."""
         try:
             self.ser.close()
         except Exception:
@@ -80,8 +79,7 @@ class Hygrometer:
                     ambient = float(m.group("at"))
                     return {
                         "dewpoint_temp": dewpoint,
-                        "ambient_temp": ambient,
-                        "relative_humidity_calculated": self.compute_relative_humidity(dewpoint, ambient)
+                        "hygrometer_temp": ambient,
                     }
 
             # Nudge if stalled (every 1.0s) - no buffer reset needed
@@ -93,15 +91,3 @@ class Hygrometer:
             time.sleep(0.05)
 
         return None
-
-    def compute_relative_humidity(self, dp: float, t: float) -> float:
-        """Compute RH (%) from dew point (dp) and ambient temp (t) using Magnus formula."""
-        a, b = 17.625, 243.04
-        try:
-            if dp >= t: return 100.0
-            num = math.exp(a * dp / (b + dp))
-            den = math.exp(a * t / (b + t))
-            return max(0.0, min(100.0, 100.0 * num / den))
-        except Exception:
-            return float('nan')
-

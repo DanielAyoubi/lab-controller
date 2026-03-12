@@ -13,6 +13,7 @@ from src.devices.controller import Controller
 from src.gui.widgets.plot_widget import RealTimePlotWidget
 from src.gui.workers import ExperimentWorker, PollWorker, FlowRampWorker
 from src.gui.settings_dialog import SettingsDialog
+from src.utility.update_settings import apply_settings
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -88,7 +89,7 @@ class MainWindow(QMainWindow):
             
             # Update controller settings
             if self.controller:
-                self.controller.update_settings(self.config)
+                apply_settings(self.controller.config, self.config, self.controller.logger, self.controller.pid)
 
             # Apply changes
             if hasattr(self, 'plot_widget'):
@@ -419,13 +420,18 @@ class MainWindow(QMainWindow):
 
     def set_chiller_temp(self):
         temp = self.spin_chiller_temp.value()
+        self._stop_poll_worker()
         try:
-            self.controller.set_chiller_temperature(temp)
+            self.controller.chiller.set_setpoint_temperature(temp)
+            self.controller.chiller.start_control()
             self.target_chiller_temp = temp
             self.lbl_chiller_monitor.setText("Monitor: Waiting...")
             self.lbl_chiller_monitor.setStyleSheet("color: orange")
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to set chiller temperature: {e}")
+        finally:
+            if self.controller.is_connected():
+                self._start_poll_worker()
 
     def toggle_rh_control(self):
         if self.controller.rh_control_active:
@@ -461,7 +467,7 @@ class MainWindow(QMainWindow):
         if self.experiment_worker and self.experiment_worker.isRunning():
             # Stop experiment
             self.experiment_worker.stop()
-            self.experiment_worker.wait()
+            self.experiment_worker.wait(5000)
             self.btn_start_exp.setText("Start Experiment")
             self.btn_set_flow.setEnabled(True)
             self._start_poll_worker()
@@ -519,7 +525,7 @@ class MainWindow(QMainWindow):
 
     def _on_poll_data(self, data: dict):
         try:
-            curr_rh = data.get('rh_chiller') or data.get('rh_hygrometer')
+            curr_rh = data.get('rh_chiller') if data.get('rh_chiller') is not None else data.get('rh_hygrometer')
             if self.controller.rh_control_active:
                 self.controller.update_rh_control_loop(curr_rh)
                 status = self.controller.get_rh_control_status(curr_rh)

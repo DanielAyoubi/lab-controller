@@ -41,7 +41,6 @@ class JulaboChiller:
         return self.connected
 
     def _reconnect(self):
-        """Close and reopen the serial port after a write failure."""
         try:
             self.ser.close()
         except Exception:
