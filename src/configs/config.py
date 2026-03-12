@@ -4,21 +4,18 @@ CONFIG = {
     "log_prefix": "nsim_log",
     # Plotting settings
     "max_plot_points": 500,  # Maximum number of points to display
-    # Serial port settings
+    # Serial port settings — COM ports are machine-specific and must be set in
+    # local_config.py (gitignored). See local_config.example.py for the template.
     # Dry air mass flow controller
     "dry_mfc_enabled": True,
-    "dry_mfc_port": "COM6",  # Change to your port (e.g., 'COM3' on Windows)
     "dry_mfc_address": 1,
     # Wet air mass flow controller
     "wet_mfc_enabled": True,
-    "wet_mfc_port": "COM7",  # Change to your port (e.g., 'COM4' on Windows)
     "wet_mfc_address": 247,
     # DewMaster hygrometer
     "hygrometer_enabled": True,
-    "hygrometer_port": "COM9",  # Change to your port (e.g., 'COM5' on Windows)
     # Julabo Chiller
     "chiller_enabled": True,
-    "chiller_port": "COM8",  # Change to your port
     # Communication settings
     "mfc_baudrate": 9600,
     "chiller_baudrate": 9600,

@@ -21,7 +21,7 @@ class MainWindow(QMainWindow):
         self.resize(1200, 800)
 
         # Load Config
-        self.config = self.load_config("config.py")
+        self.config = self.load_config("src/configs/config.py")
         
         # Initialize Controller
         self.controller = Controller(self.config)
@@ -48,7 +48,22 @@ class MainWindow(QMainWindow):
             config_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(config_module)
             if hasattr(config_module, "CONFIG"):
-                return config_module.CONFIG.copy()
+                cfg = config_module.CONFIG.copy()
+                # Merge machine-specific overrides from local_config.py (gitignored)
+                local_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "local_config.py")
+                if os.path.exists(local_path):
+                    try:
+                        local_spec = importlib.util.spec_from_file_location("local_config", local_path)
+                        if local_spec is None or local_spec.loader is None:
+                            raise ValueError("Could not create spec for local_config.py")
+                        local_module = importlib.util.module_from_spec(local_spec)
+                        local_spec.loader.exec_module(local_module)
+                        if hasattr(local_module, "LOCAL_CONFIG"):
+                            cfg.update(local_module.LOCAL_CONFIG)
+                            print(f"Loaded local_config.py overrides: {list(local_module.LOCAL_CONFIG.keys())}")
+                    except Exception as e:
+                        print(f"Error loading local_config.py: {e}")
+                return cfg
         except Exception as e:
             print(f"Error loading config: {e}")
         return {}
