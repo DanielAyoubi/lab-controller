@@ -1,145 +1,189 @@
-# N-SIM Microscope Environmental Control System
+# N-SIM Environmental Control System
 
-A Python-based control and monitoring system for Nikon SIM (Structured Illumination Microscopy) microscope environmental parameters.
+A PyQt6 desktop application for controlling the environmental humidity chamber of an N-SIM microscope. It manages two Vögtlin mass flow controllers (dry/wet air), a DewMaster chilled-mirror hygrometer, and a Julabo chiller to regulate relative humidity (RH).
 
 ## Features
 
-- **Mass Flow Control**: Interface with 2 Vögtlin mass flow controllers
-  - Dry air flow controller
-  - Wet air flow controller
-  - Read current flow rates
-  - Set flow rate setpoints
-  
-- **Environmental Monitoring**: Interface with DewMaster chilled mirror hygrometer
-  - Ambient temperature measurement
-  - Dewpoint temperature measurement
-  - Relative humidity measurement
+- **Mass Flow Control** — Vögtlin Modbus RTU MFCs for dry and wet air; manual and ramped setpoints
+- **Hygrometer** — DewMaster serial driver; dew-point, ambient temperature, and RH readings
+- **Chiller** — Julabo ASCII serial driver; temperature setpoint and external probe readback
+- **PID RH Control** — Automatic wet/dry flow ratio adjustment to hold a target RH; settling guard, deadband, dynamic step clamping, and optional D term
+- **Automated RH Ramp Experiment** — Steps wet-flow ratio from 0 → 100 % (or reverse) with configurable hold time, pre-conditioning phase, and RH stop limits; saves CSV log and PNG summary plot
+- **Real-time Plot** — 3-panel live chart: flow rates, temperatures, RH
+- **CSV Data Logging** — Timestamped CSV written to date-organised sub-folders; separate files for background monitoring and experiments
 
-- **Data Logging**: Automatic CSV logging of all parameters with timestamps
+## Requirements
 
-- **Real-time Visualization**: Dynamic plots with live updates showing:
-  - Mass flow rates (actual vs setpoint)
-  - Temperature trends
-  - Humidity levels
+- Python 3.10+
+- Windows (COM port names; Linux/macOS would need minor port-name changes)
+- Serial/USB adapters for each device
 
-## Installation
+## Setup
 
-### Requirements
+1. **Clone the repository:**
+   ```
+   git clone <repo-url>
+   cd lab-controller
+   ```
 
-- Python 3.7 or higher
-- Serial ports for device communication
+2. **Create / activate a virtual environment and install dependencies:**
+   ```
+   python -m venv .venv
+   .venv\Scripts\pip install -r requirements.txt
+   ```
 
-### Setup
+3. **Set machine-specific device settings:**
 
-1. Clone this repository:
-```bash
-git clone https://github.com/DanielAyoubi/N-SIM-Microscope.git
-cd N-SIM-Microscope
-```
+   Copy the template and edit it for this machine:
+   ```
+   copy src\configs\local_config.example.py src\configs\local_config.py
+   ```
+   Then open `src/configs/local_config.py` and fill in the correct values:
+   ```python
+   LOCAL_CONFIG = {
+       # COM ports
+       "dry_mfc_port":    "COM6",
+       "wet_mfc_port":    "COM7",
+       "hygrometer_port": "COM9",
+       "chiller_port":    "COM8",
+       # Baud rates
+       "mfc_baudrate":        9600,
+       "hygrometer_baudrate": 19200,
+       "chiller_baudrate":    9600,
+       # Modbus addresses
+       "dry_mfc_address": 1,
+       "wet_mfc_address": 247,
+       # Enable / disable devices
+       "dry_mfc_enabled":    True,
+       "wet_mfc_enabled":    True,
+       "hygrometer_enabled": True,
+       "chiller_enabled":    True,
+   }
+   ```
+   `local_config.py` is gitignored — it stays on the machine permanently and is never committed.
 
-2. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
+4. **Run the application:**
+   ```
+   python main.py
+   ```
 
-3. Configure your hardware:
-Edit `config.py` to match your serial port configuration:
-```python
-CONFIG = {
-    'dry_mfc_port': '/dev/ttyUSB0',  # Your dry air MFC port
-    'wet_mfc_port': '/dev/ttyUSB1',  # Your wet air MFC port
-    'hygrometer_port': '/dev/ttyUSB2',  # Your hygrometer port
-    # ... other settings
-}
-```
+## Configuration
 
-## Usage
+Configuration is split across two files:
 
-### Basic Usage
+- **`src/configs/config.py`** (committed) — application and experiment defaults. Edit this to change experiment behaviour for everyone.
+- **`src/configs/local_config.py`** (gitignored) — all device-specific settings for this machine. Keys here override `config.py` at startup.
 
-Run the control system:
-```bash
-python main.py
-```
+Settings can also be changed at runtime through the **Settings** dialog (General / Devices / Experiment tabs) — changes are held in memory for the session only.
 
-Settings can be adjusted in the GUI or by editing `config.py`.
+### `local_config.py` keys (device settings)
 
+| Key | Default | Description |
+|-----|---------|-------------|
+| `dry_mfc_port` / `wet_mfc_port` | — | COM ports for Vögtlin MFCs |
+| `hygrometer_port` | — | COM port for DewMaster |
+| `chiller_port` | — | COM port for Julabo chiller |
+| `mfc_baudrate` | 9600 | Baud rate for both MFCs |
+| `hygrometer_baudrate` | 19200 | Baud rate for the hygrometer |
+| `chiller_baudrate` | 9600 | Baud rate for the chiller |
+| `dry_mfc_address` / `wet_mfc_address` | 1 / 247 | Modbus unit addresses |
+| `dry/wet_mfc_enabled` | True | Enable/disable each MFC |
+| `hygrometer_enabled` / `chiller_enabled` | True | Enable/disable hygrometer / chiller |
 
-5. **Explore API usage examples:**
-```bash
-python examples.py
-```
+### `config.py` keys (application & experiment settings)
 
-### Stopping the System
-
-Press `Ctrl+C` to gracefully stop monitoring and disconnect from devices.
+| Key | Default | Description |
+|-----|---------|-------------|
+| `control_interval` | 5000 ms | Sensor poll period |
+| `max_flow` | 2.0 L/min | Total flow used during experiments |
+| `log_dir` / `log_prefix` | `data` / `nsim_log` | CSV output directory and filename prefix |
+| `experiment_step_size` | 5.0 % | Wet-flow increment per experiment step |
+| `experiment_hold_time` | 180 s | Wait time at each step |
+| `experiment_rh_lower` / `experiment_rh_upper` | 0 / 90 % | RH limits for experiment stop and pre-conditioning |
+| `rh_kp` / `rh_ki` / `rh_kd` | 0.02 / 0.001 / 0.05 | PID gains (set `rh_kd = 0` to disable D term) |
+| `rh_deadband` | 1.0 % | Minimum RH error that triggers a correction |
+| `rh_settling_time` | 180 s | Max wait after a full-scale flow change |
+| `rh_settling_time_min` | 5 s | Min wait regardless of step size |
+| `rh_max_step` | 0.05 | Wet-ratio change ceiling at 100 % error |
 
 ## Project Structure
 
 ```
-N-SIM-Microscope/
-├── main.py                 # Main application entry point
-├── config.py              # Configuration file
-├── demo.py                # Demo with simulated data (no hardware needed)
-├── examples.py            # API usage examples
-├── requirements.txt       # Python dependencies
-├── README.md             # This file
+lab-controller/
+├── main.py                          # Entry point — creates QApplication and MainWindow
+├── requirements.txt
 ├── src/
-│   ├── devices/          # Device interfaces
-│   │   ├── vogtlin_mfc.py      # Vögtlin MFC interface
-│   │   └── dewmaster.py        # DewMaster hygrometer interface
-│   ├── logging/          # Data logging
-│   │   └── data_logger.py      # CSV logging functionality
-│   └── visualization/    # Plotting and visualization
-│       └── plotter.py          # Real-time plotting
-├── tests/                # Unit tests
-│   └── test_system.py        # Test suite
-└── data/                 # Log files directory (created automatically)
+│   ├── configs/
+│   │   ├── config.py                # Default configuration (committed)
+│   │   ├── local_config.py          # Machine-specific device settings (gitignored)
+│   │   └── local_config.example.py  # Template for local_config.py
+│   ├── devices/
+│   │   ├── controller.py            # Central orchestrator: device refs, PI loop, experiment runner
+│   │   ├── vogtlin_mfc.py           # Modbus RTU driver (minimalmodbus, big-endian 32-bit floats)
+│   │   ├── hygrometer.py            # DewMaster serial driver (Magnus formula RH)
+│   │   ├── chiller.py               # Julabo ASCII serial driver
+│   │   └── pid_controller.py        # RH PID with settling guard, deadband, dynamic step cap
+│   ├── gui/
+│   │   ├── main_window.py           # Main window: left panel controls + right panel plot
+│   │   ├── workers.py               # PollWorker, FlowRampWorker, ExperimentWorker (QThread)
+│   │   ├── settings_dialog.py       # Three-tab settings dialog (General / Devices / Experiment)
+│   │   └── widgets/
+│   │       └── plot_widget.py       # RealTimePlotWidget — 3 shared-x Matplotlib subplots
+│   └── utility/
+│       ├── data_logger.py           # CSV logger with date sub-folders, 8 KB write buffer
+│       ├── plot_saver.py            # Saves smoothed 3-panel PNG at experiment end
+│       ├── compute_RH.py            # Magnus formula: RH from dew-point and ambient temp
+│       └── update_settings.py       # Applies runtime settings changes to controller/logger/PID
+├── tests/                           # pytest test suite
+└── data/                            # Log output directory (created automatically)
 ```
 
-## Data Format
+## Data Logging
 
-Log files are saved in CSV format with the following columns:
-- `timestamp`: ISO format timestamp
-- `dry_flow`: Dry air actual flow rate (L/min)
-- `dry_setpoint`: Dry air setpoint (L/min)
-- `wet_flow`: Wet air actual flow rate (L/min)
-- `wet_setpoint`: Wet air setpoint (L/min)
-- `ambient_temp`: Ambient temperature (°C)
-- `dewpoint_temp`: Dewpoint temperature (°C)
-- `relative_humidity`: Relative humidity (%)
+CSV files are written to `<log_dir>/<DD_MM_YYYY>/<prefix>_<timestamp>.csv`. Columns:
+
+| Column | Description |
+|--------|-------------|
+| `timestamp` | ISO 8601 timestamp |
+| `dry_flow` | Dry MFC actual flow (L/min) |
+| `wet_flow` | Wet MFC actual flow (L/min) |
+| `dry_flow_setpoint` | Dry MFC setpoint (L/min) |
+| `wet_flow_setpoint` | Wet MFC setpoint (L/min) |
+| `hygrometer_temp` | Hygrometer ambient temperature (°C) |
+| `dewpoint_temp` | Dew-point temperature (°C) |
+| `rh_hygrometer` | RH computed from hygrometer ambient temp |
+| `rh_chiller` | RH computed from chiller external probe temp (preferred during experiments) |
+| `chiller_temp` | Chiller external probe temperature (°C) |
+| `chiller_setpoint` | Chiller temperature setpoint (°C) |
+
+At experiment end a smoothed PNG summary plot is saved alongside the CSV.
+
+## Running Tests
+
+```
+.venv\Scripts\pytest tests/
+```
+
+## Device Protocols
+
+### Vögtlin MFCs
+- Modbus RTU over RS-485
+- 32-bit floats packed across two consecutive 16-bit registers, big-endian byte order
+- Default baud rate: 9600; addresses: dry = 1, wet = 247
+
+### DewMaster Hygrometer
+- RS-232 serial, 19200 baud
+- Sends `P\r`; parses `DP / AT / RH` response line
+- RH re-derived from dew-point via the Magnus formula
+
+### Julabo Chiller
+- RS-232 serial, 9600 baud
+- ASCII commands: `in_pv_02` (external temp), `out_sp_00 <val>` (setpoint), `out_mode_05 1/0` (start/stop), terminated with `\r\n`
 
 ## Troubleshooting
 
-### Serial Port Issues
+**Device not connecting** — Check the COM port name in `local_config.py` (or the Settings → Devices dialog), confirm the device is powered on, and ensure no other software (e.g. PuTTY, another Python process) is holding the port open.
 
-**Linux:**
-- Check available ports: `ls /dev/tty*`
-- Add user to dialout group: `sudo usermod -a -G dialout $USER`
-- Log out and log back in for changes to take effect
+**Wrong readings after settings change** — Port and baud rate changes only take effect after disconnecting and reconnecting devices.
 
-**Windows:**
-- Check Device Manager for COM port numbers
-- Ensure drivers are installed for USB-serial adapters
-
-### Connection Errors
-
-If devices fail to connect:
-1. Verify correct serial port names in configuration
-2. Check that devices are powered on
-3. Verify baud rates match device settings (default: 9600)
-4. Ensure no other software is using the serial ports
-
-## Device Communication Protocols
-
-### Vögtlin MFC
-- Default baud rate: 9600
-- Protocol: ASCII commands over RS-232/RS-485
-- Commands are sent with device address prefix
-
-### DewMaster Hygrometer
-- Default baud rate: 9600
-- Protocol: ASCII commands over RS-232
-- Returns comma-separated values for readings
-
-**Note:** Communication protocols may vary by model. Adjust the device interface files if needed for your specific hardware.
+**Experiment never reaches stability** — Increase `experiment_stability_timeout` or widen `rh_deadband` if the hygrometer is noisy. The pre-conditioning phase will time out and proceed after the timeout regardless.

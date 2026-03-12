@@ -4,22 +4,8 @@ CONFIG = {
     "log_prefix": "nsim_log",
     # Plotting settings
     "max_plot_points": 500,  # Maximum number of points to display
-    # Serial port settings — COM ports are machine-specific and must be set in
-    # local_config.py (gitignored). See local_config.example.py for the template.
-    # Dry air mass flow controller
-    "dry_mfc_enabled": True,
-    "dry_mfc_address": 1,
-    # Wet air mass flow controller
-    "wet_mfc_enabled": True,
-    "wet_mfc_address": 247,
-    # DewMaster hygrometer
-    "hygrometer_enabled": True,
-    # Julabo Chiller
-    "chiller_enabled": True,
-    # Communication settings
-    "mfc_baudrate": 9600,
-    "chiller_baudrate": 9600,
-    "hygrometer_baudrate": 19200,
+    # Device settings (ports, baudrates, addresses, enable flags) are machine-specific
+    # and must be set in local_config.py (gitignored). See local_config.example.py.
     # Automated experiment settings
     "experiment_direction": "up",  # "up" or "down"
     "experiment_step_size": 5.0,  # Wet-flow increment per step (% of total flow, 0–100)
