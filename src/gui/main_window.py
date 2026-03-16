@@ -465,12 +465,10 @@ class MainWindow(QMainWindow):
 
     def toggle_experiment(self):
         if self.experiment_worker and self.experiment_worker.isRunning():
-            # Stop experiment
+            # Signal the background thread to stop; cleanup happens in on_experiment_finished
             self.experiment_worker.stop()
-            self.experiment_worker.wait(5000)
-            self.btn_start_exp.setText("Start Experiment")
-            self.btn_set_flow.setEnabled(True)
-            self._start_poll_worker()
+            self.btn_start_exp.setText("Stopping…")
+            self.btn_start_exp.setEnabled(False)
         else:
             # Start experiment — sync UI values into config
             self.config['experiment_direction'] = self.combo_direction.currentText()
@@ -498,9 +496,21 @@ class MainWindow(QMainWindow):
             self._last_plot_path = msg[len("PLOT_PATH:"):]
 
     def on_experiment_finished(self):
+        was_cancelled = not self.btn_start_exp.isEnabled()  # disabled means we hit "Stopping…"
+        if was_cancelled:
+            try:
+                self.controller.set_flow_rates(dry_flow=0.0, wet_flow=0.0,
+                                               max_flow=self.config.get('max_flow', 2.0),
+                                               ramp_flow=False)
+            except Exception as e:
+                print(f"Failed to zero flows after cancel: {e}")
         self._start_poll_worker()
         self.btn_start_exp.setText("Start Experiment")
+        self.btn_start_exp.setEnabled(True)
         self.btn_set_flow.setEnabled(True)
+
+        if was_cancelled:
+            return
 
         # Restart background log if CSV saving is enabled and devices are still connected
         if self.chk_save_csv.isChecked() and self.controller.is_connected():
@@ -519,6 +529,7 @@ class MainWindow(QMainWindow):
     def on_experiment_error(self, msg):
         self._start_poll_worker()
         self.btn_start_exp.setText("Start Experiment")
+        self.btn_start_exp.setEnabled(True)
         self.btn_set_flow.setEnabled(True)
         self._last_plot_path = None
         QMessageBox.critical(self, "Experiment Error", msg)
