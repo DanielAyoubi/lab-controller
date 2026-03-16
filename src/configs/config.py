@@ -21,9 +21,9 @@ CONFIG = {
     # (typically requires chiller ≤ 15 °C).
     "experiment_rh_upper": 90.0,
     # stability_readings: consecutive readings within ±deadband to declare stable.
-    "experiment_stability_readings": 5,
+    "experiment_stability_readings": 10,
     # stability_timeout: max seconds to wait for stability before proceeding anyway.
-    "experiment_stability_timeout": 600.0,
+    "experiment_stability_timeout": 900.0,
     # RH PI controller tuning
     # settling_time: maximum seconds to wait after a full-scale flow change (e.g. 0 → max_flow).
     # The actual wait scales linearly with the size of each step; the lower bound is

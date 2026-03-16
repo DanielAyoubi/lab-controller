@@ -312,7 +312,7 @@ class Controller:
         rh_lower: float = 0.0,
         rh_upper: float = 90.0,
         stability_readings: int = 10,
-        stability_timeout: float = 600.0,
+        stability_timeout: float = 900.0,
         on_data: Optional[Callable[[Dict], None]] = None,
         on_progress: Optional[Callable[[str], None]] = None,
     ) -> Optional[str]:
@@ -368,8 +368,14 @@ class Controller:
                 t_max = precondpid.params["settling_time"]
                 precondpid.state.dynamic_settling_time = t_min + (t_max - t_min) * min(1.0, delta / max(0.01, max_flow))
                 precondpid.state.last_adjustment_time = time.time()
+                initial_soak_s = 120
                 print(f"Pre-cond: initial flow set → wet={initial_wet_ratio*100:.0f}% "
-                      f"(settling {precondpid.state.dynamic_settling_time:.0f}s before PID fine-tunes)")
+                      f"(soaking {initial_soak_s}s before stability checks begin)")
+                soak_start = time.time()
+                while self.running and (time.time() - soak_start) < initial_soak_s:
+                    remaining = initial_soak_s - (time.time() - soak_start)
+                    print(f"Pre-cond soak: {remaining:.0f}s remaining…")
+                    time.sleep(min(10, remaining))
 
             while self.running:
                 if time.time() - phase_start > stability_timeout:
@@ -424,9 +430,8 @@ class Controller:
                         print(f"Stable at {current_rh:.1f}% RH — starting ramp.")
                         break
 
-                sleep_time = control_interval - (time.time() - cycle_start)
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
+                sleep_time = max(10.0, control_interval - (time.time() - cycle_start))
+                time.sleep(sleep_time)
 
             # ── Phase 2: Flow-ratio ramp ──────────────────────────────────────
             n_steps = int(round(100.0 / step_size))
