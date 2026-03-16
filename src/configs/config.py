@@ -11,7 +11,7 @@ CONFIG = {
     "experiment_step_size": 5.0,  # Wet-flow increment per step (% of total flow, 0–100)
     "experiment_hold_time": 180.0,  # Seconds to wait at each flow step before advancing
     "max_flow": 2.0,  # Maximum/target total flow rate (dry + wet) in L/min
-    "control_interval": 5000,  # Update interval in milliseconds
+    "control_interval": 2000,  # Update interval in milliseconds
     # RH interval / pre-conditioning
     # rh_lower: lower bound of the RH interval. For "up" experiments this is the
     # pre-conditioning target; 0.0 = set dry-only flow and wait for equilibration.

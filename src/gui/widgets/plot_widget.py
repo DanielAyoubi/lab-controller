@@ -42,7 +42,6 @@ class RealTimePlotWidget(QWidget):
         self.setLayout(layout)
 
         self._lines = {}
-        self._redraw_count = 0
         self._setup_plots()
 
     def set_max_points(self, max_points: int):
@@ -172,11 +171,8 @@ class RealTimePlotWidget(QWidget):
         update_line_filtered(self._lines['rh_hygrometer'], rh_hygrometer_data)
         update_line_filtered(self._lines['rh_chiller'], rh_chiller_data)
 
-        # Rescale axes — relim every tick, autoscale every 10 to reduce CPU cost
-        self._redraw_count += 1
         for ax in self.canvas.axes:
             ax.relim()
-            if self._redraw_count % 10 == 0:
-                ax.autoscale_view()
+            ax.autoscale_view()
 
         self.canvas.draw_idle()

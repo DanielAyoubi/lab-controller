@@ -154,9 +154,13 @@ class Controller:
         if self.hygrometer and data["dewpoint_temp"] is not None:
             dp = data["dewpoint_temp"]
             if data["hygrometer_temp"] is not None:
-                data["rh_hygrometer"] = compute_relative_humidity(dp=dp, t=data["hygrometer_temp"])
+                data["rh_hygrometer"] = compute_relative_humidity(
+                    dp=dp, t=data["hygrometer_temp"]
+                )
             if data["chiller_temp"] is not None:
-                data["rh_chiller"] = compute_relative_humidity(dp=dp, t=data["chiller_temp"])
+                data["rh_chiller"] = compute_relative_humidity(
+                    dp=dp, t=data["chiller_temp"]
+                )
 
         return data
 
@@ -174,7 +178,6 @@ class Controller:
                 pass
         return data
 
-        
     # ── Flow Control ─────────────────────────────────────────────────────────
 
     def set_flow_rates(
@@ -210,7 +213,6 @@ class Controller:
                 success = False
         return success
 
-
     def get_current_flows(self) -> tuple:
         return (
             self.dry_mfc.get_setpoint() if self.dry_mfc else 0.0,
@@ -220,8 +222,12 @@ class Controller:
     def _ramp_flows(self, dry_flow: Optional[float], wet_flow: Optional[float]):
         current_dry, current_wet = self.get_current_flows()
 
-        dry_diff = (dry_flow - current_dry) if (dry_flow is not None and self.dry_mfc) else 0.0
-        wet_diff = (wet_flow - current_wet) if (wet_flow is not None and self.wet_mfc) else 0.0
+        dry_diff = (
+            (dry_flow - current_dry) if (dry_flow is not None and self.dry_mfc) else 0.0
+        )
+        wet_diff = (
+            (wet_flow - current_wet) if (wet_flow is not None and self.wet_mfc) else 0.0
+        )
 
         max_delta = max(abs(dry_diff), abs(wet_diff))
         step_size = 0.05  # L/min
@@ -296,7 +302,8 @@ class Controller:
 
     # ── Experiment ───────────────────────────────────────────────────────────
 
-    def run_automated_experiment(self,
+    def run_automated_experiment(
+        self,
         direction: str,
         step_size: float,
         max_flow: float,
@@ -304,12 +311,11 @@ class Controller:
         hold_time: float = 180.0,
         rh_lower: float = 0.0,
         rh_upper: float = 90.0,
-        stability_readings: int = 5,
+        stability_readings: int = 10,
         stability_timeout: float = 600.0,
         on_data: Optional[Callable[[Dict], None]] = None,
         on_progress: Optional[Callable[[str], None]] = None,
     ) -> Optional[str]:
-
         self.running = True
         step_times: list = []
 
@@ -328,6 +334,7 @@ class Controller:
 
             deadband = self.pid.params["deadband"]
             dry_only_precond = going_up and rh_lower == 0.0
+            time.sleep(1)
 
             if dry_only_precond:
                 self.set_flow_rates(
@@ -345,9 +352,24 @@ class Controller:
                     f"within ±{deadband:.1f}%, timeout {stability_timeout:.0f}s) ──"
                 )
 
-            precondpid = RhPidController(self.config)
+            precond_cfg = {**self.config, 'rh_max_step': min(0.5, max(self.config.get('rh_max_step', 0.05) * 4, 0.2))}
+            precondpid = RhPidController(precond_cfg)
             stable_count = 0
             phase_start = time.time()
+
+            if not dry_only_precond:
+                initial_wet_ratio = precond_target / 100.0
+                curr_dry, curr_wet = self.get_current_flows()
+                new_dry = (1.0 - initial_wet_ratio) * max_flow
+                new_wet = initial_wet_ratio * max_flow
+                self.set_flow_rates(dry_flow=new_dry, wet_flow=new_wet, max_flow=max_flow, ramp_flow=False)
+                delta = abs(new_dry - curr_dry) + abs(new_wet - curr_wet)
+                t_min = precondpid.params["settling_time_min"]
+                t_max = precondpid.params["settling_time"]
+                precondpid.state.dynamic_settling_time = t_min + (t_max - t_min) * min(1.0, delta / max(0.01, max_flow))
+                precondpid.state.last_adjustment_time = time.time()
+                print(f"Pre-cond: initial flow set → wet={initial_wet_ratio*100:.0f}% "
+                      f"(settling {precondpid.state.dynamic_settling_time:.0f}s before PID fine-tunes)")
 
             while self.running:
                 if time.time() - phase_start > stability_timeout:
@@ -359,7 +381,11 @@ class Controller:
 
                 cycle_start = time.time()
                 data = self.read_and_log(on_data)
-                current_rh: Optional[float] = data.get("rh_chiller") if data.get("rh_chiller") is not None else data.get("rh_hygrometer")
+                current_rh: Optional[float] = (
+                    data.get("rh_chiller")
+                    if data.get("rh_chiller") is not None
+                    else data.get("rh_hygrometer")
+                )
 
                 if current_rh is not None:
                     if not dry_only_precond:
@@ -409,7 +435,9 @@ class Controller:
                 if abs(ratios[-1] - 1.0) > 0.001:
                     ratios.append(1.0)
             else:
-                ratios = [max(0.0, 1.0 - i * step_size / 100.0) for i in range(n_steps + 1)]
+                ratios = [
+                    max(0.0, 1.0 - i * step_size / 100.0) for i in range(n_steps + 1)
+                ]
                 if abs(ratios[-1]) > 0.001:
                     ratios.append(0.0)
 
@@ -446,7 +474,10 @@ class Controller:
                 )
 
                 self.set_flow_rates(
-                    dry_flow=dry_flow, wet_flow=wet_flow, max_flow=max_flow, ramp_flow=False
+                    dry_flow=dry_flow,
+                    wet_flow=wet_flow,
+                    max_flow=max_flow,
+                    ramp_flow=False,
                 )
                 step_times.append(datetime.now())
 
@@ -455,7 +486,11 @@ class Controller:
                     cycle_start = time.time()
                     data = self.read_and_log(on_data)
 
-                    meas_rh: Optional[float] = data.get("rh_chiller") if data.get("rh_chiller") is not None else data.get("rh_hygrometer")
+                    meas_rh: Optional[float] = (
+                        data.get("rh_chiller")
+                        if data.get("rh_chiller") is not None
+                        else data.get("rh_hygrometer")
+                    )
                     if meas_rh is not None:
                         if going_up and meas_rh >= rh_upper:
                             print(
@@ -489,4 +524,3 @@ class Controller:
             print("Experiment finished.")
 
         return plot_path
-
