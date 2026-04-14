@@ -95,7 +95,7 @@ class RhPidController:
         # --- Deadband ---------------------------------------------------------
         if abs(error) < p["deadband"]:
             s.last_time = now
-            s.integral = 0.0  # bleed integral while on target
+            s.integral *= 0.98  # slow decay — preserves operating-point memory
             return None
 
         # --- PID terms --------------------------------------------------------

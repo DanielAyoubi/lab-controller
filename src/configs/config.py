@@ -21,18 +21,18 @@ CONFIG = {
     # (typically requires chiller ≤ 15 °C).
     "experiment_rh_upper": 90.0,
     # stability_readings: consecutive readings within ±deadband to declare stable.
-    "experiment_stability_readings": 10,
+    "experiment_stability_readings": 5,
     # stability_timeout: max seconds to wait for stability before proceeding anyway.
-    "experiment_stability_timeout": 900.0,
+    "experiment_stability_timeout": 800.0,
     # RH PI controller tuning
     # settling_time: maximum seconds to wait after a full-scale flow change (e.g. 0 → max_flow).
     # The actual wait scales linearly with the size of each step; the lower bound is
     # rh_settling_time_min.  3 min for a 2 L/min step is a reasonable starting point.
     "rh_settling_time": 200.0,
     # settling_time_min: minimum wait regardless of how small the flow change is (seconds).
-    "rh_settling_time_min": 30.0,
+    "rh_settling_time_min": 10.0,
     # deadband: ignore errors smaller than this (±%) — avoids chasing sensor noise.
-    "rh_deadband": 5.0,
+    "rh_deadband": 1.0,
     # max_step: wet-ratio change ceiling when |error| = 100 %.
     # The actual step scales linearly with |error|, so at 10 % error the
     # permitted change is max_step * 0.10 — much smaller near the setpoint.
