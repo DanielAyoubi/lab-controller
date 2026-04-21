@@ -302,17 +302,108 @@ class Controller:
 
     # ── Experiment ───────────────────────────────────────────────────────────
 
+    def _stabilize_to_rh(
+        self,
+        target_rh: float,
+        pid: RhPidController,
+        max_flow: float,
+        stability_readings: int,
+        stability_timeout: float,
+        control_interval: float,
+        dry_only: bool = False,
+        on_data: Optional[Callable[[Dict], None]] = None,
+        on_progress: Optional[Callable[[str], None]] = None,
+    ) -> bool:
+        """PI-drive flows toward target_rh until stable or timed out.
+
+        Returns True if stability_readings consecutive within-deadband readings
+        were achieved; False if stability_timeout elapsed first.
+        """
+        stable_count = 0
+        phase_start = time.time()
+        deadband = self.pid.params["deadband"]
+
+        while self.running:
+            if time.time() - phase_start > stability_timeout:
+                msg = (
+                    f"Stabilisation toward {target_rh:.1f}% timed out after "
+                    f"{stability_timeout:.0f}s — proceeding anyway."
+                )
+                print(msg)
+                if on_progress:
+                    try:
+                        on_progress(msg)
+                    except Exception:
+                        pass
+                return False
+
+            cycle_start = time.time()
+            data = self.read_and_log(on_data)
+            current_rh: Optional[float] = (
+                data.get("rh_chiller")
+                if data.get("rh_chiller") is not None
+                else data.get("rh_hygrometer")
+            )
+
+            if current_rh is not None:
+                if not dry_only:
+                    curr_dry, curr_wet = self.get_current_flows()
+                    new_wet_ratio = pid.compute(
+                        target_rh, current_rh, curr_dry, curr_wet, max_flow
+                    )
+                    if new_wet_ratio is not None:
+                        self.set_flow_rates(
+                            dry_flow=(1.0 - new_wet_ratio) * max_flow,
+                            wet_flow=new_wet_ratio * max_flow,
+                            max_flow=max_flow,
+                            ramp_flow=False,
+                        )
+                        pid.state.last_adjustment_time = time.time()
+
+                is_stable = (
+                    current_rh < deadband
+                    if dry_only
+                    else abs(current_rh - target_rh) < deadband
+                )
+                stable_count = stable_count + 1 if is_stable else 0
+
+                msg = (
+                    f"Stabilising → {target_rh:.1f}% | "
+                    f"current {current_rh:.1f}% "
+                    f"({stable_count}/{stability_readings} stable)"
+                )
+                print(msg)
+                if on_progress:
+                    try:
+                        on_progress(msg)
+                    except Exception:
+                        pass
+
+                if stable_count >= stability_readings:
+                    print(f"Stable at {current_rh:.1f}% RH.")
+                    return True
+
+            time.sleep(max(10.0, control_interval - (time.time() - cycle_start)))
+
+        return False  # self.running went False
+
     def run_automated_experiment(
         self,
-        direction: str,
-        step_size: float,
-        max_flow: float,
-        control_interval: float,
+        mode: str = "flow",
+        # Flow mode params
+        flow_start: float = 0.0,
+        flow_end: float = 2.0,
+        flow_step: float = 0.1,
+        # RH mode params
+        rh_start: float = 0.0,
+        rh_end: float = 90.0,
+        rh_step: float = 5.0,
+        # Shared params
+        max_flow: float = 2.0,
+        control_interval: float = 5.0,
         hold_time: float = 180.0,
-        rh_lower: float = 0.0,
-        rh_upper: float = 90.0,
-        stability_readings: int = 10,
-        stability_timeout: float = 900.0,
+        stability_readings: int = 5,
+        stability_timeout: float = 800.0,
         on_data: Optional[Callable[[Dict], None]] = None,
         on_progress: Optional[Callable[[str], None]] = None,
     ) -> Optional[str]:
@@ -323,101 +414,138 @@ class Controller:
         csv_path = self.logger.get_current_filename()
 
         try:
-            # ── Phase 1: Pre-conditioning ─────────────────────────────────────
-            # Bring the system to the starting end of the RH interval and wait
-            # for stability before launching the open-loop flow ramp.
-            #
-            # "up"  → pre-condition to rh_lower; stop ramp at rh_upper
-            # "down" → pre-condition to rh_upper; stop ramp at rh_lower
-            going_up = direction.lower() == "up"
-            precond_target = rh_lower if going_up else rh_upper
-
-            deadband = self.pid.params["deadband"]
-            dry_only_precond = going_up and rh_lower == 0.0
             time.sleep(1)
 
-            if dry_only_precond:
-                self.set_flow_rates(
-                    dry_flow=max_flow, wet_flow=0.0, max_flow=max_flow, ramp_flow=False
-                )
-                print(
-                    f"\n── Pre-conditioning: 0% RH (dry-only flow, "
-                    f"stable when {stability_readings} consecutive readings "
-                    f"< {deadband:.1f}%, timeout {stability_timeout:.0f}s) ──"
-                )
-            else:
-                print(
-                    f"\n── Pre-conditioning: targeting {precond_target:.1f}% RH "
-                    f"(stable when {stability_readings} consecutive readings "
-                    f"within ±{deadband:.1f}%, timeout {stability_timeout:.0f}s) ──"
-                )
-
-            precond_cfg = {**self.config, 'rh_max_step': min(0.5, max(self.config.get('rh_max_step', 0.05) * 4, 0.2))}
-            precondpid = RhPidController(precond_cfg)
-            stable_count = 0
-            phase_start = time.time()
-
-            if not dry_only_precond:
-                initial_wet_ratio = precond_target / 100.0
-                curr_dry, curr_wet = self.get_current_flows()
-                new_dry = (1.0 - initial_wet_ratio) * max_flow
-                new_wet = initial_wet_ratio * max_flow
-                self.set_flow_rates(dry_flow=new_dry, wet_flow=new_wet, max_flow=max_flow, ramp_flow=False)
-                delta = abs(new_dry - curr_dry) + abs(new_wet - curr_wet)
-                t_min = precondpid.params["settling_time_min"]
-                t_max = precondpid.params["settling_time"]
-                precondpid.state.dynamic_settling_time = t_min + (t_max - t_min) * min(1.0, delta / max(0.01, max_flow))
-                precondpid.state.last_adjustment_time = time.time()
-                initial_soak_s = 120
-                print(f"Pre-cond: initial flow set → wet={initial_wet_ratio*100:.0f}% "
-                      f"(soaking {initial_soak_s}s before stability checks begin)")
-                soak_start = time.time()
-                while self.running and (time.time() - soak_start) < initial_soak_s:
-                    remaining = initial_soak_s - (time.time() - soak_start)
-                    print(f"Pre-cond soak: {remaining:.0f}s remaining…")
-                    time.sleep(min(10, remaining))
-
-            while self.running:
-                if time.time() - phase_start > stability_timeout:
+            # ── Phase 1: Pre-conditioning ─────────────────────────────────────
+            if mode == "flow":
+                # Open-loop: just set the starting wet flow and let it settle.
+                if flow_start <= 0.0:
+                    # Dry-only flush — use PI stability check to confirm low RH
+                    self.set_flow_rates(
+                        dry_flow=max_flow, wet_flow=0.0, max_flow=max_flow, ramp_flow=False
+                    )
                     print(
-                        f"Pre-conditioning timed out after {stability_timeout:.0f}s — "
-                        "proceeding to ramp anyway."
+                        f"\n── Pre-conditioning (flow mode): dry-only flush "
+                        f"(timeout {stability_timeout:.0f}s) ──"
                     )
-                    break
+                    precond_cfg = {
+                        **self.config,
+                        'rh_max_step': min(0.5, max(self.config.get('rh_max_step', 0.05) * 4, 0.2)),
+                    }
+                    precondpid = RhPidController(precond_cfg)
+                    self._stabilize_to_rh(
+                        target_rh=0.0,
+                        pid=precondpid,
+                        max_flow=max_flow,
+                        stability_readings=stability_readings,
+                        stability_timeout=stability_timeout,
+                        control_interval=control_interval,
+                        dry_only=True,
+                        on_data=on_data,
+                        on_progress=on_progress,
+                    )
+                else:
+                    # Non-zero start: set flows directly, brief 60 s soak
+                    self.set_flow_rates(
+                        dry_flow=max(0.0, max_flow - flow_start),
+                        wet_flow=flow_start,
+                        max_flow=max_flow,
+                        ramp_flow=False,
+                    )
+                    print(
+                        f"\n── Pre-conditioning (flow mode): set wet={flow_start:.3f} L/min, "
+                        f"soaking 60 s ──"
+                    )
+                    soak_end = time.time() + 60.0
+                    while self.running and time.time() < soak_end:
+                        cycle_start = time.time()
+                        self.read_and_log(on_data)
+                        time.sleep(max(0.0, control_interval - (time.time() - cycle_start)))
 
-                cycle_start = time.time()
-                data = self.read_and_log(on_data)
-                current_rh: Optional[float] = (
-                    data.get("rh_chiller")
-                    if data.get("rh_chiller") is not None
-                    else data.get("rh_hygrometer")
+            else:  # mode == "rh"
+                going_up = rh_end >= rh_start
+                precond_target = rh_start if going_up else rh_end
+                dry_only_precond = going_up and precond_target == 0.0
+
+                deadband = self.pid.params["deadband"]
+                precond_cfg = {
+                    **self.config,
+                    'rh_max_step': min(0.5, max(self.config.get('rh_max_step', 0.05) * 4, 0.2)),
+                }
+                precondpid = RhPidController(precond_cfg)
+
+                if dry_only_precond:
+                    self.set_flow_rates(
+                        dry_flow=max_flow, wet_flow=0.0, max_flow=max_flow, ramp_flow=False
+                    )
+                    print(
+                        f"\n── Pre-conditioning (RH mode): 0% RH (dry-only flush, "
+                        f"stable when {stability_readings} consecutive readings "
+                        f"< {deadband:.1f}%, timeout {stability_timeout:.0f}s) ──"
+                    )
+                else:
+                    print(
+                        f"\n── Pre-conditioning (RH mode): targeting {precond_target:.1f}% RH "
+                        f"(stable when {stability_readings} consecutive readings "
+                        f"within ±{deadband:.1f}%, timeout {stability_timeout:.0f}s) ──"
+                    )
+                    initial_wet_ratio = precond_target / 100.0
+                    curr_dry, curr_wet = self.get_current_flows()
+                    new_dry = (1.0 - initial_wet_ratio) * max_flow
+                    new_wet = initial_wet_ratio * max_flow
+                    self.set_flow_rates(
+                        dry_flow=new_dry, wet_flow=new_wet, max_flow=max_flow, ramp_flow=False
+                    )
+                    # Inflate settling timer to absorb the 120 s initial soak
+                    delta = abs(new_dry - curr_dry) + abs(new_wet - curr_wet)
+                    t_min = precondpid.params["settling_time_min"]
+                    t_max = precondpid.params["settling_time"]
+                    precondpid.state.dynamic_settling_time = (
+                        120 + t_min + (t_max - t_min) * min(1.0, delta / max(0.01, max_flow))
+                    )
+                    precondpid.state.last_adjustment_time = time.time()
+
+                self._stabilize_to_rh(
+                    target_rh=precond_target,
+                    pid=precondpid,
+                    max_flow=max_flow,
+                    stability_readings=stability_readings,
+                    stability_timeout=stability_timeout,
+                    control_interval=control_interval,
+                    dry_only=dry_only_precond,
+                    on_data=on_data,
+                    on_progress=on_progress,
                 )
 
-                if current_rh is not None:
-                    if not dry_only_precond:
-                        curr_dry, curr_wet = self.get_current_flows()
-                        new_wet_ratio = precondpid.compute(
-                            precond_target, current_rh, curr_dry, curr_wet, max_flow
-                        )
-                        if new_wet_ratio is not None:
-                            self.set_flow_rates(
-                                dry_flow=(1.0 - new_wet_ratio) * max_flow,
-                                wet_flow=new_wet_ratio * max_flow,
-                                max_flow=max_flow,
-                                ramp_flow=False,
-                            )
-                            precondpid.state.last_adjustment_time = time.time()
+            if not self.running:
+                return None
 
-                    is_stable = (
-                        current_rh < deadband
-                        if dry_only_precond
-                        else abs(current_rh - precond_target) < deadband
-                    )
-                    stable_count = stable_count + 1 if is_stable else 0
+            # ── Phase 2: Ramp ─────────────────────────────────────────────────
+            if mode == "flow":
+                # Build wet flow target list in L/min
+                direction = 1 if flow_end >= flow_start else -1
+                n_steps = int(round(abs(flow_end - flow_start) / max(1e-6, flow_step))) + 1
+                wet_flow_targets = [
+                    round(max(0.0, min(max_flow, flow_start + direction * i * flow_step)), 6)
+                    for i in range(n_steps)
+                ]
+                if abs(wet_flow_targets[-1] - flow_end) > 0.001:
+                    wet_flow_targets.append(round(max(0.0, min(max_flow, flow_end)), 6))
 
+                print(
+                    f"Flow ramp: {len(wet_flow_targets)} steps "
+                    f"({flow_start:.3f} → {flow_end:.3f} L/min, "
+                    f"step {flow_step:.3f} L/min, hold {hold_time:.0f}s/step)"
+                )
+
+                for step_idx, wet_flow in enumerate(wet_flow_targets):
+                    if not self.running:
+                        break
+
+                    dry_flow = max(0.0, max_flow - wet_flow)
                     msg = (
-                        f"Pre-cond: {current_rh:.1f}% → {precond_target:.1f}% "
-                        f"({stable_count}/{stability_readings} stable)"
+                        f"\n── Flow Step {step_idx + 1}/{len(wet_flow_targets)}: "
+                        f"wet={wet_flow:.3f} L/min, dry={dry_flow:.3f} L/min ──"
                     )
                     print(msg)
                     if on_progress:
@@ -426,96 +554,92 @@ class Controller:
                         except Exception:
                             pass
 
-                    if stable_count >= stability_readings:
-                        print(f"Stable at {current_rh:.1f}% RH — starting ramp.")
+                    self.set_flow_rates(
+                        dry_flow=dry_flow,
+                        wet_flow=wet_flow,
+                        max_flow=max_flow,
+                        ramp_flow=False,
+                    )
+                    step_times.append(datetime.now())
+
+                    elapsed = 0.0
+                    while elapsed < hold_time and self.running:
+                        cycle_start = time.time()
+                        self.read_and_log(on_data)
+                        elapsed += control_interval
+                        sleep_time = control_interval - (time.time() - cycle_start)
+                        if sleep_time > 0:
+                            time.sleep(sleep_time)
+
+            else:  # mode == "rh"
+                going_up = rh_end >= rh_start
+                direction = 1 if going_up else -1
+                n_steps = int(round(abs(rh_end - rh_start) / max(1e-6, rh_step))) + 1
+                rh_targets = [
+                    round(max(0.0, min(100.0, rh_start + direction * i * rh_step)), 6)
+                    for i in range(n_steps)
+                ]
+                if abs(rh_targets[-1] - rh_end) > 0.01:
+                    rh_targets.append(round(max(0.0, min(100.0, rh_end)), 6))
+
+                print(
+                    f"RH ramp: {len(rh_targets)} steps "
+                    f"({rh_start:.1f}% → {rh_end:.1f}%, "
+                    f"step {rh_step:.1f}%, hold {hold_time:.0f}s/step)"
+                )
+
+                # Single PID carries integral momentum across all steps
+                ramp_pid = RhPidController(self.config)
+
+                for step_idx, rh_target in enumerate(rh_targets):
+                    if not self.running:
                         break
 
-                sleep_time = max(10.0, control_interval - (time.time() - cycle_start))
-                time.sleep(sleep_time)
-
-            # ── Phase 2: Flow-ratio ramp ──────────────────────────────────────
-            n_steps = int(round(100.0 / step_size))
-            if going_up:
-                ratios = [min(1.0, i * step_size / 100.0) for i in range(n_steps + 1)]
-                if abs(ratios[-1] - 1.0) > 0.001:
-                    ratios.append(1.0)
-            else:
-                ratios = [
-                    max(0.0, 1.0 - i * step_size / 100.0) for i in range(n_steps + 1)
-                ]
-                if abs(ratios[-1]) > 0.001:
-                    ratios.append(0.0)
-
-            # Trim to start ahead of the pre-conditioned flow position
-            curr_dry, curr_wet = self.get_current_flows()
-            total_sp = curr_dry + curr_wet
-            current_wet_ratio = curr_wet / total_sp if total_sp > 0.01 else 0.0
-            step_frac = step_size / 100.0
-            if going_up:
-                ratios = [r for r in ratios if r >= current_wet_ratio + step_frac]
-            else:
-                ratios = [r for r in ratios if r <= current_wet_ratio - step_frac]
-            print(
-                f"Ramp trimmed to {len(ratios)} steps "
-                f"(current wet ratio {current_wet_ratio * 100:.1f}%)"
-            )
-
-            print(
-                f"Experiment: direction={direction}, {len(ratios)} steps of "
-                f"{step_size:.1f}% wet flow, hold {hold_time:.0f}s per step, "
-                f"total flow {max_flow:.2f} L/min"
-            )
-
-            for step_idx, wet_ratio in enumerate(ratios):
-                if not self.running:
-                    break
-
-                dry_flow = max_flow * (1.0 - wet_ratio)
-                wet_flow = max_flow * wet_ratio
-                print(
-                    f"\n── Step {step_idx + 1}/{len(ratios)}: "
-                    f"wet={wet_ratio * 100:.0f}%  "
-                    f"(dry={dry_flow:.3f} L/min, wet={wet_flow:.3f} L/min) ──"
-                )
-
-                self.set_flow_rates(
-                    dry_flow=dry_flow,
-                    wet_flow=wet_flow,
-                    max_flow=max_flow,
-                    ramp_flow=False,
-                )
-                step_times.append(datetime.now())
-
-                elapsed = 0.0
-                while elapsed < hold_time and self.running:
-                    cycle_start = time.time()
-                    data = self.read_and_log(on_data)
-
-                    meas_rh: Optional[float] = (
-                        data.get("rh_chiller")
-                        if data.get("rh_chiller") is not None
-                        else data.get("rh_hygrometer")
+                    msg = (
+                        f"\n── RH Step {step_idx + 1}/{len(rh_targets)}: "
+                        f"target {rh_target:.1f}% ──"
                     )
-                    if meas_rh is not None:
-                        if going_up and meas_rh >= rh_upper:
-                            print(
-                                f"rh_upper ({rh_upper:.1f}%) reached "
-                                f"(current {meas_rh:.1f}%) — stopping ramp."
-                            )
-                            self.running = False
-                            break
-                        elif not going_up and meas_rh <= rh_lower:
-                            print(
-                                f"rh_lower ({rh_lower:.1f}%) reached "
-                                f"(current {meas_rh:.1f}%) — stopping ramp."
-                            )
-                            self.running = False
-                            break
+                    print(msg)
+                    if on_progress:
+                        try:
+                            on_progress(msg)
+                        except Exception:
+                            pass
 
-                    elapsed += control_interval
-                    sleep_time = control_interval - (time.time() - cycle_start)
-                    if sleep_time > 0:
-                        time.sleep(sleep_time)
+                    # Stabilise using PI, then hold
+                    self._stabilize_to_rh(
+                        target_rh=rh_target,
+                        pid=ramp_pid,
+                        max_flow=max_flow,
+                        stability_readings=stability_readings,
+                        stability_timeout=stability_timeout,
+                        control_interval=control_interval,
+                        dry_only=False,
+                        on_data=on_data,
+                        on_progress=on_progress,
+                    )
+                    if not self.running:
+                        break
+
+                    # Record step timestamp at the start of the hold period
+                    step_times.append(datetime.now())
+
+                    hold_msg = f"Holding at ~{rh_target:.1f}% for {hold_time:.0f}s…"
+                    print(hold_msg)
+                    if on_progress:
+                        try:
+                            on_progress(hold_msg)
+                        except Exception:
+                            pass
+
+                    elapsed = 0.0
+                    while elapsed < hold_time and self.running:
+                        cycle_start = time.time()
+                        self.read_and_log(on_data)
+                        elapsed += control_interval
+                        sleep_time = control_interval - (time.time() - cycle_start)
+                        if sleep_time > 0:
+                            time.sleep(sleep_time)
 
         finally:
             self.running = False

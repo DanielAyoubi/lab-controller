@@ -4,6 +4,15 @@ from typing import Literal
 Method = Literal["magnus_alduchov", "magnus_tetens", "buck", "lawrence"]
 
 
+def calibrated_RH(RH: float):
+    """
+    Calibration performed...
+    """
+    a = 0
+    b = 0
+    return a*RH + b
+    
+
 def compute_relative_humidity(
     dp: float,
     t: float,

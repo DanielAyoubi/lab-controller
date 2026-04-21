@@ -24,6 +24,12 @@ CONFIG = {
     "experiment_stability_readings": 5,
     # stability_timeout: max seconds to wait for stability before proceeding anyway.
     "experiment_stability_timeout": 800.0,
+    # Experiment mode: "flow" = open-loop L/min stepping; "rh" = PI-stabilised RH stepping.
+    "experiment_mode": "flow",
+    "experiment_flow_start": 0.0,   # L/min — wet flow at start of flow-mode ramp
+    "experiment_flow_end": 2.0,     # L/min — wet flow at end of flow-mode ramp
+    "experiment_flow_step": 0.1,    # L/min — wet flow increment per step (flow mode)
+    "experiment_rh_step": 5.0,      # % — RH increment per step (rh mode)
     # RH PI controller tuning
     # settling_time: maximum seconds to wait after a full-scale flow change (e.g. 0 → max_flow).
     # The actual wait scales linearly with the size of each step; the lower bound is

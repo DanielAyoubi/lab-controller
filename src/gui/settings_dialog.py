@@ -106,13 +106,37 @@ class SettingsDialog(QDialog):
         tab = QWidget()
         layout = QFormLayout(tab)
 
-        self.experiment_step_size = QDoubleSpinBox()
-        self.experiment_step_size.setDecimals(1)
-        self.experiment_step_size.setRange(0.5, 50.0)
-        self.experiment_step_size.setSingleStep(0.5)
-        self.experiment_step_size.setValue(self.config.get("experiment_step_size", 5.0))
-        self.experiment_step_size.setSuffix(" %")
-        layout.addRow("Step Size:", self.experiment_step_size)
+        self.experiment_flow_start = QDoubleSpinBox()
+        self.experiment_flow_start.setDecimals(3)
+        self.experiment_flow_start.setRange(0.0, 10.0)
+        self.experiment_flow_start.setSingleStep(0.05)
+        self.experiment_flow_start.setValue(self.config.get("experiment_flow_start", 0.0))
+        self.experiment_flow_start.setSuffix(" L/min")
+        layout.addRow("Flow Start (flow mode):", self.experiment_flow_start)
+
+        self.experiment_flow_end = QDoubleSpinBox()
+        self.experiment_flow_end.setDecimals(3)
+        self.experiment_flow_end.setRange(0.0, 10.0)
+        self.experiment_flow_end.setSingleStep(0.05)
+        self.experiment_flow_end.setValue(self.config.get("experiment_flow_end", 2.0))
+        self.experiment_flow_end.setSuffix(" L/min")
+        layout.addRow("Flow End (flow mode):", self.experiment_flow_end)
+
+        self.experiment_flow_step = QDoubleSpinBox()
+        self.experiment_flow_step.setDecimals(3)
+        self.experiment_flow_step.setRange(0.001, 2.0)
+        self.experiment_flow_step.setSingleStep(0.05)
+        self.experiment_flow_step.setValue(self.config.get("experiment_flow_step", 0.1))
+        self.experiment_flow_step.setSuffix(" L/min")
+        layout.addRow("Flow Step (flow mode):", self.experiment_flow_step)
+
+        self.experiment_rh_step = QDoubleSpinBox()
+        self.experiment_rh_step.setDecimals(1)
+        self.experiment_rh_step.setRange(0.1, 50.0)
+        self.experiment_rh_step.setSingleStep(1.0)
+        self.experiment_rh_step.setValue(self.config.get("experiment_rh_step", 5.0))
+        self.experiment_rh_step.setSuffix(" %")
+        layout.addRow("RH Step (RH mode):", self.experiment_rh_step)
 
         self.experiment_hold_time = QDoubleSpinBox()
         self.experiment_hold_time.setDecimals(0)
@@ -231,7 +255,10 @@ class SettingsDialog(QDialog):
             "mfc_baudrate": self.mfc_baudrate.value(),
             "hygrometer_baudrate": self.hygrometer_baudrate.value(),
             "chiller_baudrate": self.chiller_baudrate.value(),
-            "experiment_step_size": self.experiment_step_size.value(),
+            "experiment_flow_start": self.experiment_flow_start.value(),
+            "experiment_flow_end": self.experiment_flow_end.value(),
+            "experiment_flow_step": self.experiment_flow_step.value(),
+            "experiment_rh_step": self.experiment_rh_step.value(),
             "experiment_hold_time": self.experiment_hold_time.value(),
             "max_flow": self.max_flow.value(),
             "rh_settling_time": self.rh_settling_time.value(),

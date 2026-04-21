@@ -5,7 +5,7 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QGroupBox, QDoubleSpinBox,
-    QFormLayout, QMessageBox, QComboBox, QCheckBox, QScrollArea
+    QFormLayout, QMessageBox, QComboBox, QCheckBox, QScrollArea, QGridLayout
 )
 from PyQt6.QtCore import Qt
 
@@ -104,72 +104,98 @@ class MainWindow(QMainWindow):
                                     "Settings have been updated. \n"
                                     "If you changed device ports, please disconnect and reconnect.")
             
-            # Refresh device labels to reflect enabled/disabled settings
+            # Refresh device dot indicators to reflect enabled/disabled settings
             try:
-                for key, label in self.device_labels.items():
+                for key in self.device_labels:
                     enabled = bool(self.config.get(f"{key}_enabled", True))
                     if not enabled:
-                        label.setText("Disabled")
-                        label.setStyleSheet("color: gray")
+                        self._set_device_dot(key, "Disabled")
                     else:
-                        # If controller has the device object and overall connected, show Connected
                         dev_obj = getattr(self.controller, key, None)
                         if dev_obj and self.controller.is_connected():
-                            label.setText("Connected")
-                            label.setStyleSheet("color: green")
+                            self._set_device_dot(key, "Connected")
                         else:
-                            label.setText("Disconnected")
-                            label.setStyleSheet("color: red")
+                            self._set_device_dot(key, "Disconnected")
             except Exception:
                 pass
+
+    def _set_device_dot(self, key: str, status: str):
+        """Update device indicator dot color and tooltip."""
+        dot = self.device_labels.get(key)
+        if dot is None:
+            return
+        color_map = {
+            "Connected":      "#22aa22",
+            "Failed":         "#dd2222",
+            "Disconnected":   "#dd2222",
+            "Disabled":       "#888888",
+            "Not configured": "#888888",
+        }
+        dot.setStyleSheet(f"color: {color_map.get(status, '#888888')}; font-size: 14px;")
+        dot.setToolTip(status)
 
     def _create_left_panel(self):
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # Connection Status
-        conn_group = QGroupBox("Device Connection")
-        conn_layout = QVBoxLayout()
-        self.btn_connect = QPushButton("Connect Devices")
-        self.btn_connect.clicked.connect(self.toggle_connection)
-        self.lbl_status = QLabel("Status: Disconnected")
-        self.lbl_status.setStyleSheet("color: red")
-        self.chk_save_csv = QCheckBox("Save data to CSV")
-        self.chk_save_csv.setChecked(True)
-        conn_layout.addWidget(self.lbl_status)
-        conn_layout.addWidget(self.chk_save_csv)
-        conn_layout.addWidget(self.btn_connect)
-        conn_group.setLayout(conn_layout)
-        layout.addWidget(conn_group)
+        # Devices — compact: colored-dot indicators + connect button on one row
+        conn_group = QGroupBox("Devices")
+        conn_vbox = QVBoxLayout()
+        conn_vbox.setSpacing(4)
 
-        # Device Status (per-device labels)
-        device_group = QGroupBox("Device Status")
-        device_layout = QFormLayout()
+        # 2×2 grid of [● Name] indicators
+        dot_grid = QWidget()
+        dot_layout = QGridLayout(dot_grid)
+        dot_layout.setContentsMargins(0, 0, 0, 0)
+        dot_layout.setSpacing(2)
 
-        # Create labels for known devices
         self.device_labels = {}
-        devices = [
-            ("dry_mfc", "Dry Air MFC"),
-            ("wet_mfc", "Wet Air MFC"),
-            ("hygrometer", "Hygrometer"),
-            ("chiller", "Julabo Chiller"),
+        _devices = [
+            ("dry_mfc",    "Dry MFC"),
+            ("wet_mfc",    "Wet MFC"),
+            ("hygrometer", "Hygro"),
+            ("chiller",    "Chiller"),
         ]
-        for key, name in devices:
-            lbl = QLabel("Unknown")
-            lbl.setStyleSheet("color: gray")
-            self.device_labels[key] = lbl
-            # Show Disabled if the device is not enabled in config, otherwise show Disconnected
+        for idx, (key, short_name) in enumerate(_devices):
+            dot = QLabel("●")
+            dot.setFixedWidth(16)
             if self.config.get(f"{key}_enabled", False):
-                lbl.setText("Disconnected")
-                lbl.setStyleSheet("color: red")
+                dot.setStyleSheet("color: #dd2222; font-size: 14px;")
+                dot.setToolTip("Disconnected")
             else:
-                lbl.setText("Disabled")
-                lbl.setStyleSheet("color: gray")
-            device_layout.addRow(name + ":", lbl)
+                dot.setStyleSheet("color: #888888; font-size: 14px;")
+                dot.setToolTip("Disabled")
+            self.device_labels[key] = dot
 
-        device_group.setLayout(device_layout)
-        layout.addWidget(device_group)
+            name_lbl = QLabel(short_name)
+            name_lbl.setStyleSheet("font-size: 11px;")
+
+            cell = QWidget()
+            cell_h = QHBoxLayout(cell)
+            cell_h.setContentsMargins(0, 0, 0, 0)
+            cell_h.setSpacing(3)
+            cell_h.addWidget(dot)
+            cell_h.addWidget(name_lbl)
+            cell_h.addStretch()
+
+            row, col = divmod(idx, 2)
+            dot_layout.addWidget(cell, row, col)
+
+        conn_vbox.addWidget(dot_grid)
+
+        # Bottom row: Save CSV checkbox + Connect/Disconnect button
+        conn_bottom = QHBoxLayout()
+        self.chk_save_csv = QCheckBox("Save CSV")
+        self.chk_save_csv.setChecked(True)
+        self.btn_connect = QPushButton("Connect")
+        self.btn_connect.clicked.connect(self.toggle_connection)
+        conn_bottom.addWidget(self.chk_save_csv)
+        conn_bottom.addWidget(self.btn_connect)
+        conn_vbox.addLayout(conn_bottom)
+
+        conn_group.setLayout(conn_vbox)
+        layout.addWidget(conn_group)
 
         # Manual Control
         manual_group = QGroupBox("Manual Control")
@@ -185,12 +211,20 @@ class MainWindow(QMainWindow):
         self.spin_wet.setSingleStep(0.1)
         self.spin_wet.setSuffix(" L/min")
 
+        self.chk_ramp_flow = QCheckBox("Stepwise ramp")
+        self.chk_ramp_flow.setChecked(True)
+        self.chk_ramp_flow.setToolTip(
+            "Checked: ramp flows gradually in 0.05 L/min steps (takes ~1 s/step).\n"
+            "Unchecked: jump directly to setpoint."
+        )
+
         self.btn_set_flow = QPushButton("Set Flow Rates")
         self.btn_set_flow.clicked.connect(self.set_manual_flow)
         self.btn_set_flow.setEnabled(False)
 
-        manual_layout.addRow("Dry Air:", self.spin_dry)
-        manual_layout.addRow("Wet Air:", self.spin_wet)
+        manual_layout.addRow("Dry Flow:", self.spin_dry)
+        manual_layout.addRow("Wet Flow:", self.spin_wet)
+        manual_layout.addRow(self.chk_ramp_flow)
         manual_layout.addRow(self.btn_set_flow)
         manual_group.setLayout(manual_layout)
         layout.addWidget(manual_group)
@@ -252,17 +286,13 @@ class MainWindow(QMainWindow):
         exp_group = QGroupBox("RH Ramp Experiment")
         exp_layout = QFormLayout()
 
-        self.combo_direction = QComboBox()
-        self.combo_direction.addItems(["up", "down"])
-        self.combo_direction.setCurrentText(self.config.get('experiment_direction', 'up'))
+        # Mode selector (always visible)
+        self.combo_experiment_mode = QComboBox()
+        self.combo_experiment_mode.addItems(["Flow", "RH"])
+        saved_mode = self.config.get('experiment_mode', 'flow')
+        self.combo_experiment_mode.setCurrentText("Flow" if saved_mode.lower() == 'flow' else "RH")
 
-        self.spin_step_size = QDoubleSpinBox()
-        self.spin_step_size.setDecimals(1)
-        self.spin_step_size.setRange(0.5, 50.0)
-        self.spin_step_size.setSingleStep(0.5)
-        self.spin_step_size.setValue(self.config.get('experiment_step_size', 5.0))
-        self.spin_step_size.setSuffix(" %")
-
+        # Hold time (always visible, shared between modes)
         self.spin_hold_time = QDoubleSpinBox()
         self.spin_hold_time.setDecimals(0)
         self.spin_hold_time.setRange(10.0, 3600.0)
@@ -270,30 +300,80 @@ class MainWindow(QMainWindow):
         self.spin_hold_time.setValue(self.config.get('experiment_hold_time', 180.0))
         self.spin_hold_time.setSuffix(" s")
 
-        self.spin_rh_lower = QDoubleSpinBox()
-        self.spin_rh_lower.setDecimals(1)
-        self.spin_rh_lower.setRange(0.0, 100.0)
-        self.spin_rh_lower.setSingleStep(1.0)
-        self.spin_rh_lower.setValue(self.config.get('experiment_rh_lower', 0.0))
-        self.spin_rh_lower.setSuffix(" %")
+        # ── Flow mode widget group ──────────────────────────────────────────
+        self.flow_mode_widget = QWidget()
+        flow_form = QFormLayout(self.flow_mode_widget)
+        flow_form.setContentsMargins(0, 0, 0, 0)
 
-        self.spin_rh_upper = QDoubleSpinBox()
-        self.spin_rh_upper.setDecimals(1)
-        self.spin_rh_upper.setRange(0.0, 100.0)
-        self.spin_rh_upper.setSingleStep(1.0)
-        self.spin_rh_upper.setValue(self.config.get('experiment_rh_upper', 90.0))
-        self.spin_rh_upper.setSuffix(" %")
+        self.spin_flow_start = QDoubleSpinBox()
+        self.spin_flow_start.setDecimals(3)
+        self.spin_flow_start.setRange(0.0, 10.0)
+        self.spin_flow_start.setSingleStep(0.05)
+        self.spin_flow_start.setValue(self.config.get('experiment_flow_start', 0.0))
+        self.spin_flow_start.setSuffix(" L/min")
 
+        self.spin_flow_end = QDoubleSpinBox()
+        self.spin_flow_end.setDecimals(3)
+        self.spin_flow_end.setRange(0.0, 10.0)
+        self.spin_flow_end.setSingleStep(0.05)
+        self.spin_flow_end.setValue(self.config.get('experiment_flow_end', 2.0))
+        self.spin_flow_end.setSuffix(" L/min")
+
+        self.spin_flow_step = QDoubleSpinBox()
+        self.spin_flow_step.setDecimals(3)
+        self.spin_flow_step.setRange(0.001, 2.0)
+        self.spin_flow_step.setSingleStep(0.05)
+        self.spin_flow_step.setValue(self.config.get('experiment_flow_step', 0.1))
+        self.spin_flow_step.setSuffix(" L/min")
+
+        flow_form.addRow("Start wet flow:", self.spin_flow_start)
+        flow_form.addRow("End wet flow:", self.spin_flow_end)
+        flow_form.addRow("Wet flow step:", self.spin_flow_step)
+
+        # ── RH mode widget group ────────────────────────────────────────────
+        self.rh_mode_widget = QWidget()
+        rh_form = QFormLayout(self.rh_mode_widget)
+        rh_form.setContentsMargins(0, 0, 0, 0)
+
+        self.spin_rh_start = QDoubleSpinBox()
+        self.spin_rh_start.setDecimals(1)
+        self.spin_rh_start.setRange(0.0, 100.0)
+        self.spin_rh_start.setSingleStep(1.0)
+        self.spin_rh_start.setValue(self.config.get('experiment_rh_lower', 0.0))
+        self.spin_rh_start.setSuffix(" %")
+
+        self.spin_rh_end = QDoubleSpinBox()
+        self.spin_rh_end.setDecimals(1)
+        self.spin_rh_end.setRange(0.0, 100.0)
+        self.spin_rh_end.setSingleStep(1.0)
+        self.spin_rh_end.setValue(self.config.get('experiment_rh_upper', 90.0))
+        self.spin_rh_end.setSuffix(" %")
+
+        self.spin_rh_step = QDoubleSpinBox()
+        self.spin_rh_step.setDecimals(1)
+        self.spin_rh_step.setRange(0.1, 50.0)
+        self.spin_rh_step.setSingleStep(1.0)
+        self.spin_rh_step.setValue(self.config.get('experiment_rh_step', 5.0))
+        self.spin_rh_step.setSuffix(" %")
+
+        rh_form.addRow("Start RH:", self.spin_rh_start)
+        rh_form.addRow("End RH:", self.spin_rh_end)
+        rh_form.addRow("RH step:", self.spin_rh_step)
+
+        # ── Assemble experiment panel ───────────────────────────────────────
         self.btn_start_exp = QPushButton("Start Experiment")
         self.btn_start_exp.clicked.connect(self.toggle_experiment)
         self.btn_start_exp.setEnabled(False)
 
-        exp_layout.addRow("Direction:", self.combo_direction)
-        exp_layout.addRow("Step Size (% wet flow):", self.spin_step_size)
-        exp_layout.addRow("Step Wait Time:", self.spin_hold_time)
-        exp_layout.addRow("RH Lower Limit:", self.spin_rh_lower)
-        exp_layout.addRow("RH Upper Limit:", self.spin_rh_upper)
+        exp_layout.addRow("Mode:", self.combo_experiment_mode)
+        exp_layout.addRow("Hold time:", self.spin_hold_time)
+        exp_layout.addRow(self.flow_mode_widget)
+        exp_layout.addRow(self.rh_mode_widget)
         exp_layout.addRow(self.btn_start_exp)
+
+        self.combo_experiment_mode.currentTextChanged.connect(self._on_experiment_mode_changed)
+        self._on_experiment_mode_changed(self.combo_experiment_mode.currentText())
+
         exp_group.setLayout(exp_layout)
         layout.addWidget(exp_group)
 
@@ -316,54 +396,42 @@ class MainWindow(QMainWindow):
         self.main_layout.addWidget(self.plot_widget)
 
     def toggle_connection(self):
-        if self.btn_connect.text() == "Connect Devices":
+        if self.btn_connect.text() == "Connect":
             try:
                 results = self.controller.connect_devices()
 
-                # Update per-device labels
                 any_connected = False
                 any_failed = False
-                for key, label in self.device_labels.items():
+                for key in self.device_labels:
                     if key in results:
                         if results[key]:
-                            label.setText("Connected")
-                            label.setStyleSheet("color: green")
+                            self._set_device_dot(key, "Connected")
                             any_connected = True
                         else:
-                            label.setText("Failed")
-                            label.setStyleSheet("color: red")
+                            self._set_device_dot(key, "Failed")
                             any_failed = True
                     else:
-                        # If device explicitly disabled in config, mark Disabled
                         if not self.config.get(f"{key}_enabled", True):
-                            label.setText("Disabled")
-                            label.setStyleSheet("color: gray")
+                            self._set_device_dot(key, "Disabled")
                         else:
-                            label.setText("Not configured")
-                            label.setStyleSheet("color: gray")
+                            self._set_device_dot(key, "Not configured")
 
-                # Update overall status and buttons
                 if any_connected and not any_failed:
-                    self.lbl_status.setText("Status: Connected")
-                    self.lbl_status.setStyleSheet("color: green")
                     self.btn_connect.setText("Disconnect")
+                    self.btn_connect.setStyleSheet("background-color: #ccffcc;")
                     self.btn_set_flow.setEnabled(True)
                     self.btn_set_chiller.setEnabled(True)
                     self.btn_start_exp.setEnabled(True)
                     self.btn_toggle_rh_control.setEnabled(True)
                 elif any_connected:
-                    self.lbl_status.setText("Status: Partial Connection")
-                    self.lbl_status.setStyleSheet("color: orange")
                     self.btn_connect.setText("Disconnect")
+                    self.btn_connect.setStyleSheet("background-color: #ffe0aa;")
                     self.btn_set_flow.setEnabled(True)
                     self.btn_set_chiller.setEnabled(True)
                     self.btn_start_exp.setEnabled(True)
                     self.btn_toggle_rh_control.setEnabled(True)
-                else:
-                    self.lbl_status.setText("Status: Disconnected")
-                    self.lbl_status.setStyleSheet("color: red")
+                # else: all failed — button stays "Connect", no style change
 
-                # Start background CSV log if requested
                 if any_connected and self.chk_save_csv.isChecked():
                     try:
                         self.controller.logger.start_new_log(self.controller.log_fields)
@@ -378,32 +446,36 @@ class MainWindow(QMainWindow):
             self._stop_poll_worker()
             self.controller.logger.close()
             self.controller.disconnect_devices()
-            self.lbl_status.setText("Status: Disconnected")
-            self.lbl_status.setStyleSheet("color: red")
-            self.btn_connect.setText("Connect Devices")
+            self.btn_connect.setText("Connect")
+            self.btn_connect.setStyleSheet("")
             self.btn_set_flow.setEnabled(False)
             self.btn_set_chiller.setEnabled(False)
             self.btn_start_exp.setEnabled(False)
             self.btn_toggle_rh_control.setEnabled(False)
-            # Clear device labels
-            if hasattr(self, 'device_labels'):
-                for key, lbl in self.device_labels.items():
-                    if not self.config.get(f"{key}_enabled", True):
-                        lbl.setText("Disabled")
-                        lbl.setStyleSheet("color: gray")
-                    else:
-                        lbl.setText("Disconnected")
-                        lbl.setStyleSheet("color: red")
+            for key in self.device_labels:
+                status = "Disabled" if not self.config.get(f"{key}_enabled", True) else "Disconnected"
+                self._set_device_dot(key, status)
 
     def set_manual_flow(self):
         dry = self.spin_dry.value()
         wet = self.spin_wet.value()
-        self.btn_set_flow.setEnabled(False)
-        self._stop_poll_worker()  # avoid concurrent serial access during ramp
-        self.flow_ramp_worker = FlowRampWorker(self.controller, dry, wet)
-        self.flow_ramp_worker.finished.connect(self._on_flow_ramp_finished)
-        self.flow_ramp_worker.error.connect(self._on_flow_ramp_error)
-        self.flow_ramp_worker.start()
+        self._stop_poll_worker()  # avoid concurrent serial access
+        if self.chk_ramp_flow.isChecked():
+            # Gradual stepwise ramp via background worker
+            self.btn_set_flow.setEnabled(False)
+            self.flow_ramp_worker = FlowRampWorker(self.controller, dry, wet)
+            self.flow_ramp_worker.finished.connect(self._on_flow_ramp_finished)
+            self.flow_ramp_worker.error.connect(self._on_flow_ramp_error)
+            self.flow_ramp_worker.start()
+        else:
+            # Instant jump — set directly, no ramp
+            try:
+                self.controller.set_flow_rates(dry_flow=dry, wet_flow=wet, ramp_flow=False)
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to set flow: {e}")
+            finally:
+                if self.controller.is_connected():
+                    self._start_poll_worker()
 
     def _on_flow_ramp_finished(self):
         self.flow_ramp_worker = None
@@ -463,6 +535,10 @@ class MainWindow(QMainWindow):
             self.spin_rh_total_flow.setEnabled(False)
             self.btn_start_exp.setEnabled(False)
 
+    def _on_experiment_mode_changed(self, mode_text: str):
+        self.flow_mode_widget.setVisible(mode_text == "Flow")
+        self.rh_mode_widget.setVisible(mode_text == "RH")
+
     def toggle_experiment(self):
         if self.experiment_worker and self.experiment_worker.isRunning():
             # Signal the background thread to stop; cleanup happens in on_experiment_finished
@@ -471,11 +547,17 @@ class MainWindow(QMainWindow):
             self.btn_start_exp.setEnabled(False)
         else:
             # Start experiment — sync UI values into config
-            self.config['experiment_direction'] = self.combo_direction.currentText()
-            self.config['experiment_step_size'] = self.spin_step_size.value()
+            mode = self.combo_experiment_mode.currentText().lower()  # "flow" or "rh"
+            self.config['experiment_mode'] = mode
             self.config['experiment_hold_time'] = self.spin_hold_time.value()
-            self.config['experiment_rh_lower'] = self.spin_rh_lower.value()
-            self.config['experiment_rh_upper'] = self.spin_rh_upper.value()
+            if mode == 'flow':
+                self.config['experiment_flow_start'] = self.spin_flow_start.value()
+                self.config['experiment_flow_end'] = self.spin_flow_end.value()
+                self.config['experiment_flow_step'] = self.spin_flow_step.value()
+            else:
+                self.config['experiment_rh_lower'] = self.spin_rh_start.value()
+                self.config['experiment_rh_upper'] = self.spin_rh_end.value()
+                self.config['experiment_rh_step'] = self.spin_rh_step.value()
             # Close background log; the experiment will open its own CSV
             self.controller.logger.close()
 

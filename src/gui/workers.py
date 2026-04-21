@@ -78,15 +78,18 @@ class ExperimentWorker(QThread):
                 control_interval_sec = 5.0
 
             plot_path = self.controller.run_automated_experiment(
-                direction=self.config.get('experiment_direction', 'up'),
-                step_size=self.config.get('experiment_step_size', 5.0),
-                max_flow=self.config.get('max_flow', 2.0),
+                mode=self.config.get('experiment_mode', 'flow'),
+                flow_start=float(self.config.get('experiment_flow_start', 0.0)),
+                flow_end=float(self.config.get('experiment_flow_end', 2.0)),
+                flow_step=float(self.config.get('experiment_flow_step', 0.1)),
+                rh_start=float(self.config.get('experiment_rh_lower', 0.0)),
+                rh_end=float(self.config.get('experiment_rh_upper', 90.0)),
+                rh_step=float(self.config.get('experiment_rh_step', 5.0)),
+                max_flow=float(self.config.get('max_flow', 2.0)),
                 control_interval=control_interval_sec,
-                hold_time=self.config.get('experiment_hold_time', 180.0),
-                rh_lower=float(self.config.get('experiment_rh_lower', 0.0)),
-                rh_upper=float(self.config.get('experiment_rh_upper', 90.0)),
+                hold_time=float(self.config.get('experiment_hold_time', 180.0)),
                 stability_readings=int(self.config.get('experiment_stability_readings', 5)),
-                stability_timeout=float(self.config.get('experiment_stability_timeout', 600.0)),
+                stability_timeout=float(self.config.get('experiment_stability_timeout', 800.0)),
                 on_data=self.data_ready.emit,
                 on_progress=self.progress.emit,
             )
