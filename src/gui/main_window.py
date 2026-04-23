@@ -5,7 +5,8 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QGroupBox, QDoubleSpinBox,
-    QFormLayout, QMessageBox, QComboBox, QCheckBox, QScrollArea, QGridLayout
+    QFormLayout, QMessageBox, QComboBox, QCheckBox, QScrollArea, QGridLayout,
+    QTableWidget, QTableWidgetItem, QHeaderView, QSizePolicy,
 )
 from PyQt6.QtCore import Qt
 
@@ -120,7 +121,6 @@ class MainWindow(QMainWindow):
                 pass
 
     def _set_device_dot(self, key: str, status: str):
-        """Update device indicator dot color and tooltip."""
         dot = self.device_labels.get(key)
         if dot is None:
             return
@@ -144,7 +144,7 @@ class MainWindow(QMainWindow):
         conn_vbox = QVBoxLayout()
         conn_vbox.setSpacing(4)
 
-        # 2×2 grid of [● Name] indicators
+        # 2×2 grid of indicators
         dot_grid = QWidget()
         dot_layout = QGridLayout(dot_grid)
         dot_layout.setContentsMargins(0, 0, 0, 0)
@@ -288,9 +288,10 @@ class MainWindow(QMainWindow):
 
         # Mode selector (always visible)
         self.combo_experiment_mode = QComboBox()
-        self.combo_experiment_mode.addItems(["Flow", "RH"])
+        self.combo_experiment_mode.addItems(["Flow", "RH", "Hysteresis"])
+        _mode_map = {'flow': 'Flow', 'rh': 'RH', 'hysteresis': 'Hysteresis'}
         saved_mode = self.config.get('experiment_mode', 'flow')
-        self.combo_experiment_mode.setCurrentText("Flow" if saved_mode.lower() == 'flow' else "RH")
+        self.combo_experiment_mode.setCurrentText(_mode_map.get(saved_mode.lower(), 'Flow'))
 
         # Hold time (always visible, shared between modes)
         self.spin_hold_time = QDoubleSpinBox()
@@ -360,6 +361,46 @@ class MainWindow(QMainWindow):
         rh_form.addRow("End RH:", self.spin_rh_end)
         rh_form.addRow("RH step:", self.spin_rh_step)
 
+        # ── Hysteresis mode widget ──────────────────────────────────────────
+        self.hysteresis_widget = QWidget()
+        hyst_vbox = QVBoxLayout(self.hysteresis_widget)
+        hyst_vbox.setContentsMargins(0, 0, 0, 0)
+        hyst_vbox.setSpacing(4)
+
+        _col_headers = ["T (°C)", "Step%", "Start%", "End%", "Prog", "Wait(s)"]
+        self.hysteresis_table = QTableWidget(0, len(_col_headers))
+        self.hysteresis_table.setHorizontalHeaderLabels(_col_headers)
+        _hdr = self.hysteresis_table.horizontalHeader()
+        if _hdr is not None:
+            # Stretch columns 1-3 (Step/Start/End) equally; fix narrow columns
+            for col in [0, 4, 5]:
+                _hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+            for col in [1, 2, 3]:
+                _hdr.setSectionResizeMode(col, QHeaderView.ResizeMode.Stretch)
+        self.hysteresis_table.setColumnWidth(0, 52)   # T (°C)
+        self.hysteresis_table.setColumnWidth(4, 42)   # Prog
+        self.hysteresis_table.setColumnWidth(5, 58)   # Wait(s)
+        self.hysteresis_table.setMinimumHeight(120)
+        self.hysteresis_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        hyst_vbox.addWidget(self.hysteresis_table)
+
+        hyst_btn_row = QHBoxLayout()
+        btn_add_row = QPushButton("Add Row")
+        btn_add_row.clicked.connect(self._hysteresis_add_row)
+        btn_remove_row = QPushButton("Remove Row")
+        btn_remove_row.clicked.connect(self._hysteresis_remove_row)
+        hyst_btn_row.addWidget(btn_add_row)
+        hyst_btn_row.addWidget(btn_remove_row)
+        hyst_vbox.addLayout(hyst_btn_row)
+
+        # Pre-populate from config or add one default row
+        saved_steps = self.config.get('experiment_hysteresis_steps', [])
+        if saved_steps:
+            for s in saved_steps:
+                self._hysteresis_add_row(s)
+        else:
+            self._hysteresis_add_row()
+
         # ── Assemble experiment panel ───────────────────────────────────────
         self.btn_start_exp = QPushButton("Start Experiment")
         self.btn_start_exp.clicked.connect(self.toggle_experiment)
@@ -369,6 +410,7 @@ class MainWindow(QMainWindow):
         exp_layout.addRow("Hold time:", self.spin_hold_time)
         exp_layout.addRow(self.flow_mode_widget)
         exp_layout.addRow(self.rh_mode_widget)
+        exp_layout.addRow(self.hysteresis_widget)
         exp_layout.addRow(self.btn_start_exp)
 
         self.combo_experiment_mode.currentTextChanged.connect(self._on_experiment_mode_changed)
@@ -538,6 +580,10 @@ class MainWindow(QMainWindow):
     def _on_experiment_mode_changed(self, mode_text: str):
         self.flow_mode_widget.setVisible(mode_text == "Flow")
         self.rh_mode_widget.setVisible(mode_text == "RH")
+        self.hysteresis_widget.setVisible(mode_text == "Hysteresis")
+        # Hold-time spinbox is shared by Flow/RH but not used in Hysteresis
+        # (hysteresis uses per-row wait_time instead), so hide it for clarity
+        self.spin_hold_time.setVisible(mode_text != "Hysteresis")
 
     def toggle_experiment(self):
         if self.experiment_worker and self.experiment_worker.isRunning():
@@ -547,17 +593,20 @@ class MainWindow(QMainWindow):
             self.btn_start_exp.setEnabled(False)
         else:
             # Start experiment — sync UI values into config
-            mode = self.combo_experiment_mode.currentText().lower()  # "flow" or "rh"
+            mode = self.combo_experiment_mode.currentText().lower()  # "flow", "rh", or "hysteresis"
             self.config['experiment_mode'] = mode
-            self.config['experiment_hold_time'] = self.spin_hold_time.value()
             if mode == 'flow':
+                self.config['experiment_hold_time'] = self.spin_hold_time.value()
                 self.config['experiment_flow_start'] = self.spin_flow_start.value()
                 self.config['experiment_flow_end'] = self.spin_flow_end.value()
                 self.config['experiment_flow_step'] = self.spin_flow_step.value()
-            else:
+            elif mode == 'rh':
+                self.config['experiment_hold_time'] = self.spin_hold_time.value()
                 self.config['experiment_rh_lower'] = self.spin_rh_start.value()
                 self.config['experiment_rh_upper'] = self.spin_rh_end.value()
                 self.config['experiment_rh_step'] = self.spin_rh_step.value()
+            else:  # hysteresis
+                self.config['experiment_hysteresis_steps'] = self._read_hysteresis_table()
             # Close background log; the experiment will open its own CSV
             self.controller.logger.close()
 
@@ -653,6 +702,52 @@ class MainWindow(QMainWindow):
         except Exception:
             # Don't spam errors
             pass
+
+    def _hysteresis_add_row(self, step: dict = None):
+        row = self.hysteresis_table.rowCount()
+        self.hysteresis_table.insertRow(row)
+        defaults = {"chiller_setpoint": 20.0, "step_size": 5.0,
+                    "start_rh": 5.0, "end_rh": 80.0,
+                    "program": "H", "wait_time": 180.0}
+        s = step if step else defaults
+        self.hysteresis_table.setItem(row, 0, QTableWidgetItem(str(s.get("chiller_setpoint", 20.0))))
+        self.hysteresis_table.setItem(row, 1, QTableWidgetItem(str(s.get("step_size", 5.0))))
+        self.hysteresis_table.setItem(row, 2, QTableWidgetItem(str(s.get("start_rh", 5.0))))
+        self.hysteresis_table.setItem(row, 3, QTableWidgetItem(str(s.get("end_rh", 80.0))))
+        prog_combo = QComboBox()
+        prog_combo.addItems(["H", "D"])
+        prog_combo.setCurrentText(str(s.get("program", "H")).upper())
+        self.hysteresis_table.setCellWidget(row, 4, prog_combo)
+        self.hysteresis_table.setItem(row, 5, QTableWidgetItem(str(s.get("wait_time", 180.0))))
+
+    def _hysteresis_remove_row(self):
+        selected = self.hysteresis_table.currentRow()
+        row = selected if selected >= 0 else self.hysteresis_table.rowCount() - 1
+        if row >= 0:
+            self.hysteresis_table.removeRow(row)
+
+    def _read_hysteresis_table(self) -> list:
+        steps = []
+        for row in range(self.hysteresis_table.rowCount()):
+            def _cell(c, default=0.0):
+                item = self.hysteresis_table.item(row, c)
+                if item is None:
+                    return default
+                try:
+                    return float(item.text())
+                except ValueError:
+                    return default
+            prog_widget = self.hysteresis_table.cellWidget(row, 4)
+            program = prog_widget.currentText() if prog_widget else "H"
+            steps.append({
+                "chiller_setpoint": _cell(0, 20.0),
+                "step_size":        _cell(1, 5.0),
+                "start_rh":         _cell(2, 5.0),
+                "end_rh":           _cell(3, 80.0),
+                "program":          program,
+                "wait_time":        _cell(5, 180.0),
+            })
+        return steps
 
     def closeEvent(self, event):
         if self.controller:

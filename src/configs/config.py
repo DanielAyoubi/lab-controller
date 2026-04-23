@@ -12,6 +12,7 @@ CONFIG = {
     "experiment_hold_time": 180.0,  # Seconds to wait at each flow step before advancing
     "max_flow": 2.0,  # Maximum/target total flow rate (dry + wet) in L/min
     "control_interval": 2000,  # Update interval in milliseconds
+    "RH_source": "rh_chiller", # "rh_chiller" or "rh_hygrometer" - which instrument temperature to use for the RH used for the flow control
     # RH interval / pre-conditioning
     # rh_lower: lower bound of the RH interval. For "up" experiments this is the
     # pre-conditioning target; 0.0 = set dry-only flow and wait for equilibration.
@@ -38,7 +39,7 @@ CONFIG = {
     # settling_time_min: minimum wait regardless of how small the flow change is (seconds).
     "rh_settling_time_min": 10.0,
     # deadband: ignore errors smaller than this (±%) — avoids chasing sensor noise.
-    "rh_deadband": 1.0,
+    "rh_deadband": 2.0,
     # max_step: wet-ratio change ceiling when |error| = 100 %.
     # The actual step scales linearly with |error|, so at 10 % error the
     # permitted change is max_step * 0.10 — much smaller near the setpoint.
@@ -55,4 +56,16 @@ CONFIG = {
     # Should be comparable to the hygrometer's own response time (~10–60 s).
     "rh_derivative_filter_tau": 30.0,
     "rh_integral_limit": 0.5,
+    # ── Hysteresis experiment ────────────────────────────────────────────────
+    # endpoint_hold_time: seconds to hold at end RH with PID active (H step 3 / D step 3)
+    "hysteresis_endpoint_hold_time": 300.0,
+    # flush_hold_time: seconds to hold during dry flush (H step 4) or return-to-start (D step 4)
+    "hysteresis_flush_hold_time": 300.0,
+    # chiller_timeout: max seconds to wait for chiller to reach setpoint before proceeding
+    "hysteresis_chiller_timeout": 1800.0,
+    # chiller_tolerance: accepted |chiller_temp - setpoint| in °C before proceeding
+    "hysteresis_chiller_tolerance": 0.5,
+    # experiment_hysteresis_steps: list of step dicts populated by the GUI matrix table.
+    # Each dict: {chiller_setpoint, step_size, start_rh, end_rh, program, wait_time}
+    "experiment_hysteresis_steps": [],
 }

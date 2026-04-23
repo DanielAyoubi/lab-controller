@@ -215,8 +215,50 @@ class SettingsDialog(QDialog):
         self.rh_derivative_filter_tau.setSuffix(" s")
         layout.addRow("D filter τ:", self.rh_derivative_filter_tau)
 
+        # ── Hysteresis experiment ────────────────────────────────────────────
+        layout.addRow(QLabel("── Hysteresis experiment ──"))
+
+        self.hysteresis_endpoint_hold_time = QDoubleSpinBox()
+        self.hysteresis_endpoint_hold_time.setDecimals(0)
+        self.hysteresis_endpoint_hold_time.setRange(10.0, 3600.0)
+        self.hysteresis_endpoint_hold_time.setSingleStep(30.0)
+        self.hysteresis_endpoint_hold_time.setValue(
+            float(self.config.get("hysteresis_endpoint_hold_time", 300.0))
+        )
+        self.hysteresis_endpoint_hold_time.setSuffix(" s")
+        layout.addRow("Endpoint hold (PID):", self.hysteresis_endpoint_hold_time)
+
+        self.hysteresis_flush_hold_time = QDoubleSpinBox()
+        self.hysteresis_flush_hold_time.setDecimals(0)
+        self.hysteresis_flush_hold_time.setRange(10.0, 3600.0)
+        self.hysteresis_flush_hold_time.setSingleStep(30.0)
+        self.hysteresis_flush_hold_time.setValue(
+            float(self.config.get("hysteresis_flush_hold_time", 300.0))
+        )
+        self.hysteresis_flush_hold_time.setSuffix(" s")
+        layout.addRow("Flush/return hold:", self.hysteresis_flush_hold_time)
+
+        self.hysteresis_chiller_timeout = QDoubleSpinBox()
+        self.hysteresis_chiller_timeout.setDecimals(0)
+        self.hysteresis_chiller_timeout.setRange(60.0, 7200.0)
+        self.hysteresis_chiller_timeout.setSingleStep(60.0)
+        self.hysteresis_chiller_timeout.setValue(
+            float(self.config.get("hysteresis_chiller_timeout", 1800.0))
+        )
+        self.hysteresis_chiller_timeout.setSuffix(" s")
+        layout.addRow("Chiller wait timeout:", self.hysteresis_chiller_timeout)
+
+        self.hysteresis_chiller_tolerance = QDoubleSpinBox()
+        self.hysteresis_chiller_tolerance.setDecimals(2)
+        self.hysteresis_chiller_tolerance.setRange(0.1, 5.0)
+        self.hysteresis_chiller_tolerance.setSingleStep(0.1)
+        self.hysteresis_chiller_tolerance.setValue(
+            float(self.config.get("hysteresis_chiller_tolerance", 0.5))
+        )
+        self.hysteresis_chiller_tolerance.setSuffix(" °C")
+        layout.addRow("Chiller tolerance:", self.hysteresis_chiller_tolerance)
+
         # ── Pre-conditioning stability ───────────────────────────────────────
-        from PyQt6.QtWidgets import QLabel
         layout.addRow(QLabel("── Pre-conditioning stability ──"))
 
         self.experiment_stability_readings = QSpinBox()
@@ -271,4 +313,8 @@ class SettingsDialog(QDialog):
             "rh_derivative_filter_tau": self.rh_derivative_filter_tau.value(),
             "experiment_stability_readings": self.experiment_stability_readings.value(),
             "experiment_stability_timeout": self.experiment_stability_timeout.value(),
+            "hysteresis_endpoint_hold_time": self.hysteresis_endpoint_hold_time.value(),
+            "hysteresis_flush_hold_time": self.hysteresis_flush_hold_time.value(),
+            "hysteresis_chiller_timeout": self.hysteresis_chiller_timeout.value(),
+            "hysteresis_chiller_tolerance": self.hysteresis_chiller_tolerance.value(),
         }

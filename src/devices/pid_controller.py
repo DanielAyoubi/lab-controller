@@ -173,6 +173,6 @@ class RhPidController:
             "settling_time": config.get("rh_settling_time", 180.0),
             "settling_time_min": config.get("rh_settling_time_min", 5.0),
             "max_flow": config.get("max_flow", 2.0),
-            "deadband": config.get("rh_deadband", 1.0),
+            "deadband": config.get("rh_deadband", 2.0),
             "max_step": config.get("rh_max_step", 0.05),
         }

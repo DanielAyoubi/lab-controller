@@ -1,6 +1,6 @@
 import time
 from datetime import datetime
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 from src.devices.chiller import JulaboChiller
 from src.devices.hygrometer import Hygrometer
@@ -39,6 +39,9 @@ class Controller:
             "rh_chiller",
             "chiller_temp",
             "chiller_setpoint",
+            "experiment_phase",
+            "step_index",
+            "step_program",
         ]
 
         self.rh_control_active = False
@@ -58,7 +61,7 @@ class Controller:
                 address=cfg.get("dry_mfc_address", 1),
                 name="Dry Air MFC",
             )
-            results["dry_mfc"] = self._connect_device(self.dry_mfc, "dry MFC")
+            results["dry_mfc"] = self.is_connected(self.dry_mfc, "dry MFC")
 
         if cfg.get("wet_mfc_enabled") and "wet_mfc_port" in cfg:
             self.wet_mfc = VogtlinMFC(
@@ -66,21 +69,21 @@ class Controller:
                 address=cfg.get("wet_mfc_address", 247),
                 name="Wet Air MFC",
             )
-            results["wet_mfc"] = self._connect_device(self.wet_mfc, "wet MFC")
+            results["wet_mfc"] = self.is_connected(self.wet_mfc, "wet MFC")
 
         if cfg.get("hygrometer_enabled") and "hygrometer_port" in cfg:
             self.hygrometer = Hygrometer(
                 port=cfg["hygrometer_port"],
                 baudrate=cfg.get("hygrometer_baudrate", 9600),
             )
-            results["hygrometer"] = self._connect_device(self.hygrometer, "hygrometer")
+            results["hygrometer"] = self.is_connected(self.hygrometer, "hygrometer")
 
         if cfg.get("chiller_enabled") and "chiller_port" in cfg:
             self.chiller = JulaboChiller(
                 port=cfg["chiller_port"],
                 baudrate=cfg.get("chiller_baudrate", 9600),
             )
-            results["chiller"] = self._connect_device(self.chiller, "chiller")
+            results["chiller"] = self.is_connected(self.chiller, "chiller")
 
         self.connected = any(results.values()) if results else False
         print(f"Controller connected: {self.connected} (Details: {results})")
@@ -94,20 +97,17 @@ class Controller:
         self.running = False
         self.connected = False
 
-    def is_connected(self) -> bool:
-        return self.connected
-
-    def _connect_device(self, device, name: str) -> bool:
+    def is_connected(self, device, name: str) -> bool:
         try:
             return bool(device.connect())
         except Exception as e:
             print(f"Error connecting {name}: {e}")
-            return device.is_connected()
+            return device.connected
 
     # ── Sensor Reading ───────────────────────────────────────────────────────
 
-    def read_all_sensors(self) -> Dict:
-        data = {
+    def read_all_sensors(self) -> Dict[str, Any]:
+        data: Dict[str, Any] = {
             "timestamp": datetime.now().isoformat(),
             "dry_flow": None,
             "wet_flow": None,
@@ -154,18 +154,20 @@ class Controller:
         if self.hygrometer and data["dewpoint_temp"] is not None:
             dp = data["dewpoint_temp"]
             if data["hygrometer_temp"] is not None:
-                data["rh_hygrometer"] = compute_relative_humidity(
-                    dp=dp, t=data["hygrometer_temp"]
-                )
+                data["rh_hygrometer"] = compute_relative_humidity(dp=dp, t=data["hygrometer_temp"])
             if data["chiller_temp"] is not None:
-                data["rh_chiller"] = compute_relative_humidity(
-                    dp=dp, t=data["chiller_temp"]
-                )
+                data["rh_chiller"] = compute_relative_humidity(dp=dp, t=data["chiller_temp"])
 
         return data
 
-    def read_and_log(self, on_data: Optional[Callable[[Dict], None]] = None) -> Dict:
+    def read_and_log(
+        self,
+        on_data: Optional[Callable[[Dict[str, Any]], None]] = None,
+        extra_fields: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         data = self.read_all_sensors()
+        if extra_fields:
+            data.update(extra_fields)
         if self.logger.is_logging():
             try:
                 self.logger.log_data(data)
@@ -313,6 +315,7 @@ class Controller:
         dry_only: bool = False,
         on_data: Optional[Callable[[Dict], None]] = None,
         on_progress: Optional[Callable[[str], None]] = None,
+        extra_fields: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """PI-drive flows toward target_rh until stable or timed out.
 
@@ -322,6 +325,7 @@ class Controller:
         stable_count = 0
         phase_start = time.time()
         deadband = self.pid.params["deadband"]
+        RH_source = self.config.get("RH_source", "rh_chiller")
 
         while self.running:
             if time.time() - phase_start > stability_timeout:
@@ -338,12 +342,8 @@ class Controller:
                 return False
 
             cycle_start = time.time()
-            data = self.read_and_log(on_data)
-            current_rh: Optional[float] = (
-                data.get("rh_chiller")
-                if data.get("rh_chiller") is not None
-                else data.get("rh_hygrometer")
-            )
+            data = self.read_and_log(on_data, extra_fields=extra_fields)
+            current_rh = data.get(RH_source)
 
             if current_rh is not None:
                 if not dry_only:
@@ -386,6 +386,524 @@ class Controller:
             time.sleep(max(10.0, control_interval - (time.time() - cycle_start)))
 
         return False  # self.running went False
+
+    def _wait_for_chiller_temp(
+        self,
+        target_temp: float,
+        tolerance: float = 0.5,
+        timeout: float = 1800.0,
+        control_interval: float = 5.0,
+        on_data: Optional[Callable[[Dict], None]] = None,
+        on_progress: Optional[Callable[[str], None]] = None,
+    ):
+        """Block until chiller external probe is within tolerance °C of target, or timeout."""
+        deadline = time.time() + timeout
+        last_temp = None
+        while time.time() < deadline and self.running:
+            cycle_start = time.time()
+            data = self.read_and_log(on_data)
+            chiller_temp = data.get("chiller_temp")
+            if chiller_temp is not None:
+                last_temp = chiller_temp
+                delta = abs(chiller_temp - target_temp)
+                msg = f"Chiller: {chiller_temp:.1f}°C → {target_temp:.1f}°C (Δ{delta:.2f}°C)"
+                print(msg)
+                if on_progress:
+                    try:
+                        on_progress(msg)
+                    except Exception:
+                        pass
+                if delta <= tolerance:
+                    msg = f"Chiller reached target {target_temp:.1f}°C."
+                    print(msg)
+                    if on_progress:
+                        try:
+                            on_progress(msg)
+                        except Exception:
+                            pass
+                    return
+            time.sleep(max(0.0, control_interval - (time.time() - cycle_start)))
+        temp_str = f"{last_temp:.1f}°C" if last_temp is not None else "unknown"
+        msg = f"Chiller timeout — proceeding at {temp_str}."
+        print(msg)
+        if on_progress:
+            try:
+                on_progress(msg)
+            except Exception:
+                pass
+
+    def _hold_with_pid(
+        self,
+        target_rh: float,
+        pid: RhPidController,
+        hold_time: float,
+        max_flow: float,
+        control_interval: float,
+        extra_fields: Optional[Dict[str, Any]] = None,
+        on_data: Optional[Callable[[Dict], None]] = None,
+        on_progress: Optional[Callable[[str], None]] = None,
+    ):
+        """Hold at target_rh for hold_time seconds, running PID every control_interval."""
+        RH_source = self.config.get("RH_source", "rh_chiller")
+        deadline = time.time() + hold_time
+        while time.time() < deadline and self.running:
+            cycle_start = time.time()
+            data = self.read_and_log(on_data, extra_fields=extra_fields)
+            current_rh = data.get(RH_source)
+            if current_rh is not None:
+                curr_dry, curr_wet = self.get_current_flows()
+                new_ratio = pid.compute(target_rh, current_rh, curr_dry, curr_wet, max_flow)
+                if new_ratio is not None:
+                    self.set_flow_rates(
+                        dry_flow=(1.0 - new_ratio) * max_flow,
+                        wet_flow=new_ratio * max_flow,
+                        max_flow=max_flow,
+                        ramp_flow=False,
+                    )
+                    pid.state.last_adjustment_time = time.time()
+            remaining = deadline - time.time()
+            if on_progress and int(remaining) % 30 == 0 and remaining > 1:
+                try:
+                    on_progress(
+                        f"Holding at {target_rh:.1f}% — {remaining:.0f}s remaining"
+                    )
+                except Exception:
+                    pass
+            time.sleep(max(0.0, control_interval - (time.time() - cycle_start)))
+
+    def _run_humidification_step(
+        self,
+        start_rh: float,
+        end_rh: float,
+        step_size: float,
+        wait_time: float,
+        step_idx: int,
+        max_flow: float,
+        control_interval: float,
+        endpoint_hold_time: float,
+        flush_hold_time: float,
+        stability_readings: int,
+        stability_timeout: float,
+        pid: RhPidController,
+        on_data: Optional[Callable[[Dict], None]] = None,
+        on_progress: Optional[Callable[[str], None]] = None,
+    ):
+        """Execute one humidification (H) step from start_rh to end_rh."""
+        extra = {"step_index": step_idx, "step_program": "H", "experiment_phase": "stabilize_start"}
+
+        # 1. PID-stabilize to start RH
+        msg = f"[H{step_idx}] Stabilising to start RH {start_rh:.1f}%…"
+        print(msg)
+        if on_progress:
+            try:
+                on_progress(msg)
+            except Exception:
+                pass
+        self._stabilize_to_rh(
+            target_rh=start_rh,
+            pid=pid,
+            max_flow=max_flow,
+            stability_readings=stability_readings,
+            stability_timeout=stability_timeout,
+            control_interval=control_interval,
+            dry_only=(start_rh == 0.0),
+            on_data=on_data,
+            on_progress=on_progress,
+            extra_fields=extra,
+        )
+        start_dry_sp, start_wet_sp = self.get_current_flows()
+        flow_msg = (
+            f"[H{step_idx}] Start RH {start_rh:.1f}% reached — "
+            f"dry={start_dry_sp:.3f} L/min, wet={start_wet_sp:.3f} L/min"
+        )
+        print(flow_msg)
+        if on_progress:
+            try:
+                on_progress(f"START_RH_FLOWS: step={step_idx} dry={start_dry_sp:.3f} wet={start_wet_sp:.3f}")
+                on_progress(flow_msg)
+            except Exception:
+                pass
+
+        if not self.running:
+            return
+
+        # 2. Open-loop ramp from start_rh to end_rh
+        n_steps = max(1, round(abs(end_rh - start_rh) / max(1e-6, step_size)))
+        rh_targets = [
+            round(min(100.0, max(0.0, start_rh + (i + 1) * step_size)), 4)
+            for i in range(n_steps)
+        ]
+        if abs(rh_targets[-1] - end_rh) > 0.01:
+            rh_targets.append(round(min(100.0, max(0.0, end_rh)), 4))
+
+        extra["experiment_phase"] = "ramp"
+        msg = f"[H{step_idx}] Ramp: {len(rh_targets)} steps {start_rh:.1f}% → {end_rh:.1f}%, {wait_time:.0f}s/step"
+        print(msg)
+        if on_progress:
+            try:
+                on_progress(msg)
+            except Exception:
+                pass
+
+        for rh_target in rh_targets:
+            if not self.running:
+                return
+            wet_ratio = min(1.0, max(0.0, rh_target / 100.0))
+            self.set_flow_rates(
+                dry_flow=(1.0 - wet_ratio) * max_flow,
+                wet_flow=wet_ratio * max_flow,
+                max_flow=max_flow,
+                ramp_flow=False,
+            )
+            step_msg = f"[H{step_idx}] Ramp → {rh_target:.1f}% (wet_ratio={wet_ratio:.3f}), hold {wait_time:.0f}s"
+            print(step_msg)
+            if on_progress:
+                try:
+                    on_progress(step_msg)
+                except Exception:
+                    pass
+            elapsed = 0.0
+            while elapsed < wait_time and self.running:
+                cycle_start = time.time()
+                self.read_and_log(on_data, extra_fields=extra)
+                elapsed += control_interval
+                time.sleep(max(0.0, control_interval - (time.time() - cycle_start)))
+
+        if not self.running:
+            return
+
+        # 3. PID-stabilize + hold at end RH
+        extra["experiment_phase"] = "hold_endpoint"
+        msg = f"[H{step_idx}] Stabilising to end RH {end_rh:.1f}%…"
+        print(msg)
+        if on_progress:
+            try:
+                on_progress(msg)
+            except Exception:
+                pass
+        self._stabilize_to_rh(
+            target_rh=end_rh,
+            pid=pid,
+            max_flow=max_flow,
+            stability_readings=stability_readings,
+            stability_timeout=stability_timeout,
+            control_interval=control_interval,
+            on_data=on_data,
+            on_progress=on_progress,
+            extra_fields=extra,
+        )
+        if not self.running:
+            return
+        hold_msg = f"[H{step_idx}] Holding at end RH {end_rh:.1f}% for {endpoint_hold_time:.0f}s…"
+        print(hold_msg)
+        if on_progress:
+            try:
+                on_progress(hold_msg)
+            except Exception:
+                pass
+        self._hold_with_pid(
+            target_rh=end_rh,
+            pid=pid,
+            hold_time=endpoint_hold_time,
+            max_flow=max_flow,
+            control_interval=control_interval,
+            extra_fields=extra,
+            on_data=on_data,
+            on_progress=on_progress,
+        )
+
+        if not self.running:
+            return
+
+        # 4. Dry flush — 0% RH hold
+        extra["experiment_phase"] = "flush"
+        self.set_flow_rates(dry_flow=max_flow, wet_flow=0.0, max_flow=max_flow, ramp_flow=False)
+        flush_msg = f"[H{step_idx}] Dry flush for {flush_hold_time:.0f}s…"
+        print(flush_msg)
+        if on_progress:
+            try:
+                on_progress(flush_msg)
+            except Exception:
+                pass
+        elapsed = 0.0
+        while elapsed < flush_hold_time and self.running:
+            cycle_start = time.time()
+            self.read_and_log(on_data, extra_fields=extra)
+            elapsed += control_interval
+            time.sleep(max(0.0, control_interval - (time.time() - cycle_start)))
+
+    def _run_dehumidification_step(
+        self,
+        start_rh: float,
+        end_rh: float,
+        step_size: float,
+        wait_time: float,
+        step_idx: int,
+        max_flow: float,
+        control_interval: float,
+        endpoint_hold_time: float,
+        flush_hold_time: float,
+        stability_readings: int,
+        stability_timeout: float,
+        pid: RhPidController,
+        on_data: Optional[Callable[[Dict], None]] = None,
+        on_progress: Optional[Callable[[str], None]] = None,
+    ):
+        """Execute one dehumidification (D) step from start_rh down to end_rh."""
+        extra = {"step_index": step_idx, "step_program": "D", "experiment_phase": "stabilize_start"}
+
+        # 1. PID-stabilize to start RH, record flows
+        msg = f"[D{step_idx}] Stabilising to start RH {start_rh:.1f}%…"
+        print(msg)
+        if on_progress:
+            try:
+                on_progress(msg)
+            except Exception:
+                pass
+        self._stabilize_to_rh(
+            target_rh=start_rh,
+            pid=pid,
+            max_flow=max_flow,
+            stability_readings=stability_readings,
+            stability_timeout=stability_timeout,
+            control_interval=control_interval,
+            dry_only=(start_rh == 0.0),
+            on_data=on_data,
+            on_progress=on_progress,
+            extra_fields=extra,
+        )
+        start_dry_sp, start_wet_sp = self.get_current_flows()
+        flow_msg = (
+            f"[D{step_idx}] Start RH {start_rh:.1f}% reached — "
+            f"dry={start_dry_sp:.3f} L/min, wet={start_wet_sp:.3f} L/min"
+        )
+        print(flow_msg)
+        if on_progress:
+            try:
+                on_progress(f"START_RH_FLOWS: step={step_idx} dry={start_dry_sp:.3f} wet={start_wet_sp:.3f}")
+                on_progress(flow_msg)
+            except Exception:
+                pass
+
+        if not self.running:
+            return
+
+        # 2. Open-loop ramp downward from start_rh to end_rh
+        n_steps = max(1, round(abs(start_rh - end_rh) / max(1e-6, step_size)))
+        rh_targets = [
+            round(min(100.0, max(0.0, start_rh - (i + 1) * step_size)), 4)
+            for i in range(n_steps)
+        ]
+        if abs(rh_targets[-1] - end_rh) > 0.01:
+            rh_targets.append(round(min(100.0, max(0.0, end_rh)), 4))
+
+        extra["experiment_phase"] = "ramp"
+        msg = f"[D{step_idx}] Ramp: {len(rh_targets)} steps {start_rh:.1f}% → {end_rh:.1f}%, {wait_time:.0f}s/step"
+        print(msg)
+        if on_progress:
+            try:
+                on_progress(msg)
+            except Exception:
+                pass
+
+        for rh_target in rh_targets:
+            if not self.running:
+                return
+            wet_ratio = min(1.0, max(0.0, rh_target / 100.0))
+            self.set_flow_rates(
+                dry_flow=(1.0 - wet_ratio) * max_flow,
+                wet_flow=wet_ratio * max_flow,
+                max_flow=max_flow,
+                ramp_flow=False,
+            )
+            step_msg = f"[D{step_idx}] Ramp → {rh_target:.1f}% (wet_ratio={wet_ratio:.3f}), hold {wait_time:.0f}s"
+            print(step_msg)
+            if on_progress:
+                try:
+                    on_progress(step_msg)
+                except Exception:
+                    pass
+            elapsed = 0.0
+            while elapsed < wait_time and self.running:
+                cycle_start = time.time()
+                self.read_and_log(on_data, extra_fields=extra)
+                elapsed += control_interval
+                time.sleep(max(0.0, control_interval - (time.time() - cycle_start)))
+
+        if not self.running:
+            return
+
+        # 3. PID-stabilize + hold at end RH
+        extra["experiment_phase"] = "hold_endpoint"
+        msg = f"[D{step_idx}] Stabilising to end RH {end_rh:.1f}%…"
+        print(msg)
+        if on_progress:
+            try:
+                on_progress(msg)
+            except Exception:
+                pass
+        self._stabilize_to_rh(
+            target_rh=end_rh,
+            pid=pid,
+            max_flow=max_flow,
+            stability_readings=stability_readings,
+            stability_timeout=stability_timeout,
+            control_interval=control_interval,
+            on_data=on_data,
+            on_progress=on_progress,
+            extra_fields=extra,
+        )
+        if not self.running:
+            return
+        hold_msg = f"[D{step_idx}] Holding at end RH {end_rh:.1f}% for {endpoint_hold_time:.0f}s…"
+        print(hold_msg)
+        if on_progress:
+            try:
+                on_progress(hold_msg)
+            except Exception:
+                pass
+        self._hold_with_pid(
+            target_rh=end_rh,
+            pid=pid,
+            hold_time=endpoint_hold_time,
+            max_flow=max_flow,
+            control_interval=control_interval,
+            extra_fields=extra,
+            on_data=on_data,
+            on_progress=on_progress,
+        )
+
+        if not self.running:
+            return
+
+        # 4. Return to saved start-RH flows and hold open-loop
+        extra["experiment_phase"] = "flush"
+        self.set_flow_rates(
+            dry_flow=start_dry_sp, wet_flow=start_wet_sp, max_flow=max_flow, ramp_flow=False
+        )
+        flush_msg = (
+            f"[D{step_idx}] Return to start flows "
+            f"(dry={start_dry_sp:.3f}, wet={start_wet_sp:.3f}) for {flush_hold_time:.0f}s…"
+        )
+        print(flush_msg)
+        if on_progress:
+            try:
+                on_progress(flush_msg)
+            except Exception:
+                pass
+        elapsed = 0.0
+        while elapsed < flush_hold_time and self.running:
+            cycle_start = time.time()
+            self.read_and_log(on_data, extra_fields=extra)
+            elapsed += control_interval
+            time.sleep(max(0.0, control_interval - (time.time() - cycle_start)))
+
+    def run_hysteresis_experiment(
+        self,
+        steps: list,
+        max_flow: float = 2.0,
+        control_interval: float = 5.0,
+        endpoint_hold_time: float = 300.0,
+        flush_hold_time: float = 300.0,
+        chiller_temp_timeout: float = 1800.0,
+        chiller_tolerance: float = 0.5,
+        stability_readings: int = 5,
+        stability_timeout: float = 800.0,
+        on_data: Optional[Callable[[Dict], None]] = None,
+        on_progress: Optional[Callable[[str], None]] = None,
+    ) -> Optional[str]:
+        """Run a hysteresis experiment defined by a list of H/D step dicts.
+
+        Each step dict must contain:
+            chiller_setpoint (float), step_size (float, % RH),
+            start_rh (float, %), end_rh (float, %),
+            program (str, "H" or "D"), wait_time (float, seconds).
+        """
+        self.running = True
+        step_times: list = []
+
+        self.logger.start_new_log(self.log_fields, prefix="hysteresis")
+        csv_path = self.logger.get_current_filename()
+
+        try:
+            for idx, step in enumerate(steps):
+                if not self.running:
+                    break
+
+                chiller_sp = step.get("chiller_setpoint")
+                if self.chiller and chiller_sp is not None:
+                    try:
+                        self.chiller.set_setpoint_temperature(float(chiller_sp))
+                        self.chiller.start_control()
+                    except Exception as e:
+                        print(f"Error setting chiller setpoint: {e}")
+                    msg = f"[Step {idx}] Chiller setpoint → {chiller_sp}°C, waiting…"
+                    print(msg)
+                    if on_progress:
+                        try:
+                            on_progress(msg)
+                        except Exception:
+                            pass
+                    self._wait_for_chiller_temp(
+                        target_temp=float(chiller_sp),
+                        tolerance=chiller_tolerance,
+                        timeout=chiller_temp_timeout,
+                        control_interval=control_interval,
+                        on_data=on_data,
+                        on_progress=on_progress,
+                    )
+
+                if not self.running:
+                    break
+
+                pid = RhPidController(self.config)
+                pid.reset()
+
+                step_times.append(datetime.now())
+
+                s_rh   = float(step["start_rh"])
+                e_rh   = float(step["end_rh"])
+                s_size = float(step["step_size"])
+                w_time = float(step["wait_time"])
+
+                program = str(step.get("program", "H")).upper()
+                if program == "H":
+                    self._run_humidification_step(
+                        start_rh=s_rh, end_rh=e_rh,
+                        step_size=s_size, wait_time=w_time,
+                        step_idx=idx, max_flow=max_flow,
+                        control_interval=control_interval,
+                        endpoint_hold_time=endpoint_hold_time,
+                        flush_hold_time=flush_hold_time,
+                        stability_readings=stability_readings,
+                        stability_timeout=stability_timeout,
+                        pid=pid, on_data=on_data, on_progress=on_progress,
+                    )
+                else:
+                    self._run_dehumidification_step(
+                        start_rh=s_rh, end_rh=e_rh,
+                        step_size=s_size, wait_time=w_time,
+                        step_idx=idx, max_flow=max_flow,
+                        control_interval=control_interval,
+                        endpoint_hold_time=endpoint_hold_time,
+                        flush_hold_time=flush_hold_time,
+                        stability_readings=stability_readings,
+                        stability_timeout=stability_timeout,
+                        pid=pid, on_data=on_data, on_progress=on_progress,
+                    )
+
+        finally:
+            self.running = False
+            self.logger.close()
+
+            plot_path = None
+            try:
+                plot_path = save_experiment_plot(csv_path, step_times, self.logger)
+            except Exception as e:
+                print(f"Failed to save hysteresis plot: {e}")
+            print("Hysteresis experiment finished.")
+
+        return plot_path
 
     def run_automated_experiment(
         self,
