@@ -6,10 +6,15 @@ Method = Literal["magnus_alduchov", "magnus_tetens", "buck", "lawrence"]
 
 def calibrated_RH(RH: float):
     """
-    Calibration performed...
+    Correction of the RH values (obtained using the external temperature sensor) to the real RH inside the cell. 
+    Calibration performed on deliquescence of pure salts. Version of fit parameters: 09 June 2026
+    ----- Input
+    RH (%): float
+    ----- Output
+    RH (%): float
     """
-    a = 0
-    b = 0
+    a = 0.9641
+    b = 1.2871
     return a*RH + b
     
 
