@@ -35,7 +35,6 @@ class DataLogger:
         self.current_file = self._generate_filename(prefix=prefix)
 
         # Open file handle and keep it open for efficient writing
-        # Use larger buffer for better performance with high-frequency logging
         self._file_handle = open(self.current_file, "w", newline="", buffering=8192)
         self._csv_writer = csv.DictWriter(self._file_handle, fieldnames=self.fieldnames)
         self._csv_writer.writeheader()

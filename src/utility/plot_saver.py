@@ -1,28 +1,9 @@
-"""Experiment plot generation.
-
-Reads a CSV log produced by DataLogger and saves a 3-panel PNG alongside it.
-Kept separate from Controller so it can be imported and tested independently.
-"""
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 
-def save_experiment_plot(
-    csv_path: Optional[str],
-    step_times: list,
-    logger,
-) -> Optional[str]:
-    """Parse *csv_path* and save a smoothed 3-panel PNG next to it.
-
-    Args:
-        csv_path:   Path to the CSV written during the experiment, or None.
-        step_times: List of ``datetime`` objects marking each flow-ratio step.
-        logger:     A :class:`DataLogger` instance used to call ``read_log()``.
-
-    Returns:
-        Absolute path to the saved PNG, or None if nothing was written.
-    """
+def save_experiment_plot(csv_path: Optional[str], step_times: list, logger) -> Optional[str]:
     import matplotlib.dates as mdates
     import numpy as np
     from matplotlib.backends.backend_agg import FigureCanvasAgg

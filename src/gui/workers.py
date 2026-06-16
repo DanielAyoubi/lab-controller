@@ -5,7 +5,7 @@ from typing import Dict, Any
 
 
 class PollWorker(QThread):
-    """Polls sensors on a background thread so the GUI stays responsive."""
+    """Polls sensors on a background thread"""
     data_ready = pyqtSignal(dict)
 
     def __init__(self, controller, interval_ms: int):
@@ -23,7 +23,6 @@ class PollWorker(QThread):
                 self.data_ready.emit(data)
             except Exception as e:
                 print(f"PollWorker error: {e}")
-            # Sleep in small chunks so stop() is responsive
             deadline = t0 + self.interval_ms / 1000.0
             while self._running and time.monotonic() < deadline:
                 time.sleep(0.05)
@@ -33,7 +32,6 @@ class PollWorker(QThread):
 
 
 class FlowRampWorker(QThread):
-    """Runs a flow ramp on a background thread so the GUI stays responsive."""
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
@@ -104,5 +102,4 @@ class ExperimentWorker(QThread):
 
     def stop(self):
         self._is_running = False
-        # We should also signal the controller to stop if possible
         self.controller.running = False

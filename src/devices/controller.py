@@ -107,7 +107,7 @@ class Controller:
     # ── Sensor Reading ───────────────────────────────────────────────────────
 
     def read_all_sensors(self) -> Dict:
-        data = {
+        data: Dict[str, Optional[float | str]] = {
             "timestamp": datetime.now().isoformat(),
             "dry_flow": None,
             "wet_flow": None,
@@ -154,13 +154,9 @@ class Controller:
         if self.hygrometer and data["dewpoint_temp"] is not None:
             dp = data["dewpoint_temp"]
             if data["hygrometer_temp"] is not None:
-                data["rh_hygrometer"] = compute_relative_humidity(
-                    dp=dp, t=data["hygrometer_temp"]
-                )
+                data["rh_hygrometer"] = compute_relative_humidity(dp=dp, t=data["hygrometer_temp"])
             if data["chiller_temp"] is not None:
-                data["rh_chiller"] = compute_relative_humidity(
-                    dp=dp, t=data["chiller_temp"]
-                )
+                data["rh_chiller"] = compute_relative_humidity(dp=dp, t=data["chiller_temp"])
 
         return data
 
@@ -247,7 +243,7 @@ class Controller:
                 print(f"Error during flow ramp step {i}: {e}")
             time.sleep(1)
 
-    # ── RH Control (PI) ──────────────────────────────────────────────────────
+    # ── RH Control (PID) ──────────────────────────────────────────────────────
 
     def set_rh_control_active(
         self,
@@ -314,7 +310,7 @@ class Controller:
         on_data: Optional[Callable[[Dict], None]] = None,
         on_progress: Optional[Callable[[str], None]] = None,
     ) -> bool:
-        """PI-drive flows toward target_rh until stable or timed out.
+        """PID-drive flows toward target_rh until stable or timed out.
 
         Returns True if stability_readings consecutive within-deadband readings
         were achieved; False if stability_timeout elapsed first.
@@ -385,7 +381,7 @@ class Controller:
 
             time.sleep(max(10.0, control_interval - (time.time() - cycle_start)))
 
-        return False  # self.running went False
+        return False
 
     def run_automated_experiment(
         self,

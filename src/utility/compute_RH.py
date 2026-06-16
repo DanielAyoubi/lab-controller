@@ -1,7 +1,7 @@
 import math
 from typing import Literal
 
-Method = Literal["magnus_alduchov", "magnus_tetens", "buck", "lawrence"]
+Method = Literal["magnus", "buck", "lawrence"]
 
 
 def calibrated_RH(RH: float):
@@ -21,7 +21,7 @@ def calibrated_RH(RH: float):
 def compute_relative_humidity(
     dp: float,
     t: float,
-    method: Method = "magnus_alduchov",
+    method: Method = "magnus",
 ) -> float:
     """Compute relative humidity from dew point and ambient temperature.
 
@@ -30,12 +30,8 @@ def compute_relative_humidity(
         t:      Ambient temperature (°C).
         method: Computation method. One of:
 
-                - ``"magnus_alduchov"`` (default) — Alduchov-Eskridge 1996
-                  coefficients.  Valid −40 to 60 °C.  Recommended by WMO.
-                - ``"magnus_tetens"`` — Tetens (1930) / Murray (1967)
-                  coefficients.  Common in meteorology software.
-                - ``"buck"`` — Buck (1981) equation.  More accurate than Magnus
-                  variants over a wide temperature range (−40 to 50 °C).
+                - ``"magnus"`` (default) — Magnus (1883) equation.  Valid −40 to 60 °C.
+                - ``"buck"`` — Buck (1981) equation. Temperature range (−40 to 50 °C).
                 - ``"lawrence"`` — Lawrence (2005) linear approximation.
                   RH ≈ 100 − 5·(T − Td).  Fast and simple; error ≈ ±1.5 %
                   for T ∈ [20, 50] °C.  Good as a sanity check.
@@ -43,10 +39,8 @@ def compute_relative_humidity(
     Returns:
         RH in percent [0, 100], or ``float('nan')`` on error.
     """
-    if method == "magnus_alduchov":
-        return _magnus(dp, t, a=17.625, b=243.04)
-    if method == "magnus_tetens":
-        return _magnus(dp, t, a=17.27, b=237.3)
+    if method == "magnus":
+        return _magnus(dp, t)
     if method == "buck":
         return _buck(dp, t)
     if method == "lawrence":
@@ -56,8 +50,10 @@ def compute_relative_humidity(
 
 # ── Implementations ───────────────────────────────────────────────────────────
 
-def _magnus(dp: float, t: float, a: float, b: float) -> float:
+def _magnus(dp: float, t: float) -> float:
     """Magnus formula: RH = 100 · exp(a·dp/(b+dp)) / exp(a·t/(b+t))."""
+    a = 17.625
+    b = 243.04
     try:
         if dp >= t:
             return 100.0
@@ -71,16 +67,18 @@ def _magnus(dp: float, t: float, a: float, b: float) -> float:
 
 def _buck(dp: float, t: float) -> float:
     """Buck (1981) enhanced Magnus equation over liquid water.
-
     Uses Buck's enhanced coefficients which account for the variation of
     the enthalpy of vaporisation with temperature, giving better accuracy
     than plain Magnus variants across a wide range.
     """
+    a = 18.678
+    b = 234.5
+    c = 257.14
     try:
         if dp >= t:
             return 100.0
-        e_s = math.exp((18.678 - t / 234.5) * (t / (257.14 + t)))
-        e_d = math.exp((18.678 - dp / 234.5) * (dp / (257.14 + dp)))
+        e_s = math.exp((a - t / b) * (t / (c + t)))
+        e_d = math.exp((a - dp / b) * (dp / (c + dp)))
         val = 100.0 * e_d / e_s
         return max(0.0, min(100.0, val)) if math.isfinite(val) else float("nan")
     except Exception:
@@ -89,7 +87,6 @@ def _buck(dp: float, t: float) -> float:
 
 def _lawrence(dp: float, t: float) -> float:
     """Lawrence (2005) linear approximation: RH ≈ 100 − 5·(T − Td).
-
     Simple rule-of-thumb valid for T ∈ [20, 50] °C with ≈ ±1.5 % error.
     """
     try:

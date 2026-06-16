@@ -1,7 +1,6 @@
 import serial
 import time
 import re
-import math
 
 class Hygrometer:
     def __init__(self, port: str, baudrate: int, timeout: float = 2.0, name: str = "Hygrometer"):

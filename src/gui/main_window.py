@@ -120,7 +120,6 @@ class MainWindow(QMainWindow):
                 pass
 
     def _set_device_dot(self, key: str, status: str):
-        """Update device indicator dot color and tooltip."""
         dot = self.device_labels.get(key)
         if dot is None:
             return
