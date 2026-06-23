@@ -38,12 +38,31 @@ class VogtlinMFC:
             self.instrument.serial.baudrate = self.baudrate
             self.instrument.serial.timeout = 0.5
             time.sleep(0.5)  # wait for bus to stabilize
-            print(f"Connected to {self.name} at {self.port} (addr={self.address})")
-            self.connected = True
-            return True
         except Exception as e:
-            print(f"Error connecting to {self.name} on {self.port}: {e}")
+            print(f"Error opening {self.name} port {self.port}: {e}")
+            self.instrument = None
+            self.connected = False
             return False
+
+        # Opening the serial port only proves the USB adapter is present — it does
+        # not prove the MFC is powered on and answering on this Modbus address.
+        # Probe with a real register read so a powered-off device reports as failed.
+        try:
+            self._read_float(self.REG["flow"])
+        except Exception as e:
+            print(f"{self.name} on {self.port} (addr={self.address}): "
+                  f"port opened but device did not respond (powered off?): {e}")
+            try:
+                self.instrument.serial.close()
+            except Exception:
+                pass
+            self.instrument = None
+            self.connected = False
+            return False
+
+        print(f"Connected to {self.name} at {self.port} (addr={self.address})")
+        self.connected = True
+        return True
 
     def disconnect(self):
         if self.instrument and self.instrument.serial.is_open:

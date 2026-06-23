@@ -23,12 +23,39 @@ class JulaboChiller:
                 stopbits=serial.STOPBITS_ONE,
                 timeout=self.timeout
             )
-            print(f"Connected to Chiller on {self.port} at {self.baudrate} baud.")
-            self.connected = True
-            return True
         except serial.SerialException as e:
-            print(f"Error connecting to Chiller serial port: {e}")
+            print(f"Error opening Chiller serial port {self.port}: {e}")
             self.ser = None
+            self.connected = False
+            return False
+
+        # Opening the port only confirms the USB adapter — verify the chiller is
+        # powered on and answering before reporting a successful connection.
+        if not self._probe():
+            print(f"Chiller on {self.port}: port opened but device did not respond "
+                  f"(powered off?).")
+            try:
+                self.ser.close()
+            except Exception:
+                pass
+            self.ser = None
+            self.connected = False
+            return False
+
+        print(f"Connected to Chiller on {self.port} at {self.baudrate} baud.")
+        self.connected = True
+        return True
+
+    def _probe(self) -> bool:
+        """Send a harmless identity query and confirm the chiller answers."""
+        try:
+            self.ser.reset_input_buffer()
+            self.ser.write(b"version\r\n")
+            self.ser.flush()
+            time.sleep(0.1)
+            resp = self.ser.readline().decode("ascii", errors="ignore").strip()
+            return bool(resp)
+        except Exception:
             return False
 
     def disconnect(self):

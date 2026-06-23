@@ -56,37 +56,45 @@ class Controller:
         cfg = self.config
         results: Dict[str, bool] = {}
 
+        # Start from a clean slate so a device that previously connected (or was
+        # since disabled) never lingers as a stale reference across sessions.
+        self.dry_mfc = self.wet_mfc = self.hygrometer = self.chiller = None
+
         if cfg.get("dry_mfc_enabled") and "dry_mfc_port" in cfg:
-            self.dry_mfc = VogtlinMFC(
+            dev = VogtlinMFC(
                 port=cfg["dry_mfc_port"],
                 address=cfg.get("dry_mfc_address", 1),
                 baudrate=cfg.get("mfc_baudrate", 9600),
                 name="Dry Air MFC",
             )
-            results["dry_mfc"] = self._connect_device(self.dry_mfc, "dry MFC")
+            results["dry_mfc"] = self._connect_device(dev, "dry MFC")
+            self.dry_mfc = dev if results["dry_mfc"] else None
 
         if cfg.get("wet_mfc_enabled") and "wet_mfc_port" in cfg:
-            self.wet_mfc = VogtlinMFC(
+            dev = VogtlinMFC(
                 port=cfg["wet_mfc_port"],
                 address=cfg.get("wet_mfc_address", 247),
                 baudrate=cfg.get("mfc_baudrate", 9600),
                 name="Wet Air MFC",
             )
-            results["wet_mfc"] = self._connect_device(self.wet_mfc, "wet MFC")
+            results["wet_mfc"] = self._connect_device(dev, "wet MFC")
+            self.wet_mfc = dev if results["wet_mfc"] else None
 
         if cfg.get("hygrometer_enabled") and "hygrometer_port" in cfg:
-            self.hygrometer = Hygrometer(
+            dev = Hygrometer(
                 port=cfg["hygrometer_port"],
                 baudrate=cfg.get("hygrometer_baudrate", 19200),
             )
-            results["hygrometer"] = self._connect_device(self.hygrometer, "hygrometer")
+            results["hygrometer"] = self._connect_device(dev, "hygrometer")
+            self.hygrometer = dev if results["hygrometer"] else None
 
         if cfg.get("chiller_enabled") and "chiller_port" in cfg:
-            self.chiller = JulaboChiller(
+            dev = JulaboChiller(
                 port=cfg["chiller_port"],
                 baudrate=cfg.get("chiller_baudrate", 9600),
             )
-            results["chiller"] = self._connect_device(self.chiller, "chiller")
+            results["chiller"] = self._connect_device(dev, "chiller")
+            self.chiller = dev if results["chiller"] else None
 
         self.connected = any(results.values()) if results else False
         print(f"Controller connected: {self.connected} (Details: {results})")

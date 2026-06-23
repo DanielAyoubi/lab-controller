@@ -31,11 +31,32 @@ class Hygrometer:
             time.sleep(1)
             self.ser.reset_input_buffer()
             self.ser.reset_output_buffer()
-            self.connected = True
-            print(f"Connected to {self.name} on {self.port} at {self.baudrate} baud.")
-            return True
         except Exception as e:
-            raise RuntimeError(f"Failed to connect to {self.name}: {e}")
+            self.ser = None
+            self.connected = False
+            raise RuntimeError(f"Failed to open {self.name} port {self.port}: {e}")
+
+        # Opening the USB-serial adapter succeeds even when the DewMaster itself is
+        # powered off, so confirm we can actually read a value before reporting
+        # success. _query() does not auto-reconnect, so there is no recursion here.
+        try:
+            verified = self._query() is not None
+        except (serial.SerialException, OSError):
+            verified = False
+        if not verified:
+            print(f"{self.name} on {self.port}: port opened but no valid reading "
+                  f"(device off?).")
+            try:
+                self.ser.close()
+            except Exception:
+                pass
+            self.ser = None
+            self.connected = False
+            return False
+
+        self.connected = True
+        print(f"Connected to {self.name} on {self.port} at {self.baudrate} baud.")
+        return True
 
     def disconnect(self):
         if self.ser and self.ser.is_open:
@@ -60,21 +81,29 @@ class Hygrometer:
     def get_readings(self):
         if not self.ser or not self.ser.is_open:
             return None
-
-        # Clear input buffer only once before starting
-        self.ser.reset_input_buffer()
         try:
-            self.ser.write(b"P\r")
-            self.ser.flush()
+            return self._query()
         except (serial.SerialException, OSError) as e:
-            print(f"Write error on {self.name}, reconnecting: {e}")
+            print(f"Serial error on {self.name}, reconnecting: {e}")
             self._reconnect()
             return None
-        
+
+    def _query(self):
+        """Send one poll and read until a valid reading or timeout.
+
+        Returns the parsed reading dict, or None on timeout. Serial/OS errors
+        propagate to the caller (get_readings reconnects; connect treats them as
+        a failed verification) — this method never reconnects itself.
+        """
+        # Clear input buffer only once before starting
+        self.ser.reset_input_buffer()
+        self.ser.write(b"P\r")
+        self.ser.flush()
+
         start_time = time.time()
         last_nudge = start_time
         buffer = b""
-        
+
         while (time.time() - start_time) < self.read_timeout:
             if self.ser.in_waiting:
                 buffer += self.ser.read(self.ser.in_waiting)
