@@ -64,7 +64,6 @@ class ExperimentWorker(QThread):
         super().__init__()
         self.controller = controller
         self.config = config
-        self._is_running = True
 
     def run(self):
         try:
@@ -101,5 +100,4 @@ class ExperimentWorker(QThread):
             self.finished.emit()
 
     def stop(self):
-        self._is_running = False
         self.controller.running = False

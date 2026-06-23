@@ -1,0 +1,55 @@
+{
+  // ── Logging & plot ────────────────────────────────────────────────────────
+  "log_dir": "data",            // Folder for CSV logs and saved experiment plots
+  "log_prefix": "nsim_log",     // Filename prefix for CSV log files
+  "max_plot_points": 500,       // Max points kept in the live plot before old ones drop off
+
+  // ── Device COM ports ──────────────────────────────────────────────────────
+  "dry_mfc_port": "COM6",       // Serial port of the dry-air mass flow controller
+  "wet_mfc_port": "COM7",       // Serial port of the wet-air mass flow controller
+  "hygrometer_port": "COM9",    // Serial port of the DewMaster hygrometer
+  "chiller_port": "COM8",       // Serial port of the Julabo chiller
+
+  // ── Serial baud rates ─────────────────────────────────────────────────────
+  "mfc_baudrate": 9600,         // Baud rate for both Vogtlin MFCs
+  "hygrometer_baudrate": 19200, // Baud rate for the hygrometer
+  "chiller_baudrate": 9600,     // Baud rate for the chiller
+
+  // ── Modbus addresses ──────────────────────────────────────────────────────
+  "dry_mfc_address": 1,         // Modbus RTU address of the dry MFC
+  "wet_mfc_address": 247,       // Modbus RTU address of the wet MFC
+
+  // ── Device enable flags ───────────────────────────────────────────────────
+  "dry_mfc_enabled": true,      // Connect to the dry MFC on startup (false = skip)
+  "wet_mfc_enabled": true,      // Connect to the wet MFC on startup (false = skip)
+  "hygrometer_enabled": true,   // Connect to the hygrometer on startup (false = skip)
+  "chiller_enabled": true,      // Connect to the chiller on startup (false = skip)
+
+  // ── Experiment: general ───────────────────────────────────────────────────
+  "experiment_hold_time": 180.0,// Seconds to hold and collect data at each step
+  "max_flow": 1.0,              // Total combined flow (L/min); dry + wet always sums to this
+  "control_interval": 2000,     // Sensor polling period in MILLISECONDS
+  "flow_ramp_step": 0.05,       // L/min increment per step when ramping manual flow changes
+
+  // ── Experiment: ramp ranges ───────────────────────────────────────────────
+  "experiment_rh_lower": 0.0,           // RH-mode: lower RH bound (%)
+  "experiment_rh_upper": 90.0,          // RH-mode: upper RH bound (%)
+  "experiment_stability_readings": 5,   // RH-mode: consecutive in-band readings required for "stable"
+  "experiment_stability_timeout": 800.0,// RH-mode: max seconds to wait for stability before moving on
+  "experiment_mode": "flow",            // "flow" = open-loop wet-flow ramp, "rh" = PI-controlled RH ramp
+  "experiment_flow_start": 0.0,         // Flow-mode: wet-flow ramp start (L/min)
+  "experiment_flow_end": 2.0,           // Flow-mode: wet-flow ramp end (L/min)
+  "experiment_flow_step": 0.1,          // Flow-mode: wet-flow increment per step (L/min)
+  "experiment_rh_step": 5.0,            // RH-mode: RH increment per step (%)
+
+  // ── RH PI(D) control loop ─────────────────────────────────────────────────
+  "rh_settling_time": 200.0,        // Max wait (s) after a full-scale flow change before next correction
+  "rh_settling_time_min": 10.0,     // Min wait (s) after any flow change, regardless of step size
+  "rh_deadband": 1.0,               // Ignore RH errors smaller than this (%) to avoid chasing noise
+  "rh_max_step": 0.05,              // Wet-ratio change ceiling when error = 100%
+  "rh_kp": 0.02,                    // Proportional gain
+  "rh_ki": 0.001,                   // Integral gain
+  "rh_kd": 0.05,                    // Derivative gain (set 0.0 to disable the D term)
+  "rh_derivative_filter_tau": 30.0, // Low-pass filter time constant (s) for the D term
+  "rh_integral_limit": 0.5          // Anti-windup ceiling on the integral accumulator
+}

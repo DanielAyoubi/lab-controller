@@ -1,5 +1,6 @@
 import os
-import importlib.util
+import sys
+import json
 from typing import Optional
 
 from PyQt6.QtWidgets import (
@@ -22,7 +23,7 @@ class MainWindow(QMainWindow):
         self.resize(1200, 800)
 
         # Load Config
-        self.config = self.load_config("src/configs/config.py")
+        self.config = self.load_config()
         
         # Initialize Controller
         self.controller = Controller(self.config)
@@ -41,35 +42,93 @@ class MainWindow(QMainWindow):
         self._create_right_panel()
 
 
-    def load_config(self, config_path: str) -> dict:
-        if not os.path.exists(config_path):
-            return {}
-        try:
-            spec = importlib.util.spec_from_file_location("config", config_path)
-            config_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(config_module)
-            if hasattr(config_module, "CONFIG"):
-                cfg = config_module.CONFIG.copy()
-                # Merge machine-specific overrides from local_config.py (gitignored)
-                local_path = os.path.join(os.path.dirname(os.path.abspath(config_path)), "local_config.py")
-                if os.path.exists(local_path):
-                    try:
-                        local_spec = importlib.util.spec_from_file_location("local_config", local_path)
-                        if local_spec is None or local_spec.loader is None:
-                            raise ValueError("Could not create spec for local_config.py")
-                        local_module = importlib.util.module_from_spec(local_spec)
-                        local_spec.loader.exec_module(local_module)
-                        if hasattr(local_module, "LOCAL_CONFIG"):
-                            cfg.update(local_module.LOCAL_CONFIG)
-                            print(f"Loaded local_config.py overrides: {list(local_module.LOCAL_CONFIG.keys())}")
-                    except Exception as e:
-                        print(f"Error loading local_config.py: {e}")
-                return cfg
-        except Exception as e:
-            print(f"Error loading config: {e}")
-        return {}
+    def load_config(self, config_path: Optional[str] = None) -> dict:
+        """Load the machine-specific JSON config.
+
+        Source files run from any CWD because the path is resolved relative to
+        this module. When packaged as a PyInstaller executable, an editable
+        ``config.json`` placed next to the .exe takes precedence over the copy
+        bundled inside the executable — so COM ports can be changed without
+        rebuilding.
+        """
+        candidates = self._config_search_paths(config_path)
+        for path in candidates:
+            if path and os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.loads(self._strip_json_comments(f.read()))
+        searched = "\n  ".join(p for p in candidates if p)
+        raise FileNotFoundError(
+            "Config file not found. Looked in:\n  "
+            f"{searched}\n"
+            "Place a config.json next to the executable (or in src/configs/ "
+            "when running from source)."
+        )
+
+    @staticmethod
+    def _strip_json_comments(text: str) -> str:
+        """Strip ``//`` line and ``/* */`` block comments from JSON text.
+
+        Lets ``config.json`` carry inline documentation while still being parsed
+        by the standard ``json`` module. Comment markers inside string values are
+        preserved (so e.g. a path or COM port containing ``//`` is left intact).
+        """
+        out = []
+        i, n = 0, len(text)
+        in_string = escape = False
+        while i < n:
+            c = text[i]
+            if in_string:
+                out.append(c)
+                if escape:
+                    escape = False
+                elif c == "\\":
+                    escape = True
+                elif c == '"':
+                    in_string = False
+                i += 1
+            elif c == '"':
+                in_string = True
+                out.append(c)
+                i += 1
+            elif c == "/" and i + 1 < n and text[i + 1] == "/":
+                i += 2
+                while i < n and text[i] not in "\r\n":
+                    i += 1
+            elif c == "/" and i + 1 < n and text[i + 1] == "*":
+                i += 2
+                while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
+                    i += 1
+                i += 2
+            else:
+                out.append(c)
+                i += 1
+        return "".join(out)
+
+    @staticmethod
+    def _config_search_paths(config_path: Optional[str]) -> list:
+        """Ordered list of config.json locations to try (first match wins)."""
+        if config_path:
+            return [config_path]
+
+        paths = []
+        if getattr(sys, "frozen", False):
+            # Packaged exe: prefer an editable config.json beside the executable,
+            # then fall back to the read-only copy bundled inside the onefile.
+            paths.append(os.path.join(os.path.dirname(sys.executable), "config.json"))
+            meipass = getattr(sys, "_MEIPASS", None)
+            if meipass:
+                paths.append(os.path.join(meipass, "src", "configs", "config.json"))
+        paths.append(os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            os.pardir, "configs", "config.json",
+        ))
+        return paths
 
     def _start_poll_worker(self):
+        # Stop any existing worker first so we never overwrite a running QThread.
+        # An orphaned, still-running QThread crashes the app ("QThread: Destroyed
+        # while thread is still running") when it is later garbage-collected.
+        self._stop_poll_worker()
         interval_ms = int(self.config.get('control_interval', 5000))
         self.poll_worker = PollWorker(self.controller, interval_ms)
         self.poll_worker.data_ready.connect(self._on_poll_data)
@@ -83,41 +142,44 @@ class MainWindow(QMainWindow):
 
     def open_settings(self):
         dialog = SettingsDialog(self.config, self)
-        if dialog.exec():
-            new_settings = dialog.get_settings()
-            self.config.update(new_settings)
-            
-            # Update controller settings
-            if self.controller:
-                apply_settings(self.controller.config, self.config, self.controller.logger, self.controller.pid)
+        if not dialog.exec():
+            return
 
-            # Apply changes
-            if hasattr(self, 'plot_widget'):
-                self.plot_widget.set_max_points(self.config.get('max_plot_points', 500))
-            
-            # Update poll interval (takes effect on the next sleep cycle)
-            if self.poll_worker:
-                self.poll_worker.interval_ms = int(self.config.get('control_interval', 5000))
-            
-            # If ports changed, maybe warn user to reconnect
-            QMessageBox.information(self, "Settings Updated", 
-                                    "Settings have been updated. \n"
-                                    "If you changed device ports, please disconnect and reconnect.")
-            
-            # Refresh device dot indicators to reflect enabled/disabled settings
-            try:
-                for key in self.device_labels:
-                    enabled = bool(self.config.get(f"{key}_enabled", True))
-                    if not enabled:
-                        self._set_device_dot(key, "Disabled")
-                    else:
-                        dev_obj = getattr(self.controller, key, None)
-                        if dev_obj and self.controller.is_connected():
-                            self._set_device_dot(key, "Connected")
-                        else:
-                            self._set_device_dot(key, "Disconnected")
-            except Exception:
-                pass
+        self.config.update(dialog.get_settings())
+        self._apply_settings_to_runtime()
+
+        # If ports changed, warn the user to reconnect
+        QMessageBox.information(self, "Settings Updated",
+                                "Settings have been updated. \n"
+                                "If you changed device ports, please disconnect and reconnect.")
+
+        self._refresh_device_dots()
+
+    def _apply_settings_to_runtime(self):
+        """Push the in-memory config into the controller, plot, and poll worker."""
+        if self.controller:
+            apply_settings(self.controller.config, self.config,
+                           self.controller.logger, self.controller.pid)
+
+        if hasattr(self, 'plot_widget'):
+            self.plot_widget.set_max_points(self.config.get('max_plot_points', 500))
+
+        # Poll interval change takes effect on the next sleep cycle
+        if self.poll_worker:
+            self.poll_worker.interval_ms = int(self.config.get('control_interval', 5000))
+
+    def _refresh_device_dots(self):
+        """Update device dot indicators to reflect enabled/disabled + connection state."""
+        try:
+            for key in self.device_labels:
+                if not bool(self.config.get(f"{key}_enabled", True)):
+                    self._set_device_dot(key, "Disabled")
+                elif getattr(self.controller, key, None) and self.controller.is_connected():
+                    self._set_device_dot(key, "Connected")
+                else:
+                    self._set_device_dot(key, "Disconnected")
+        except Exception:
+            pass
 
     def _set_device_dot(self, key: str, status: str):
         dot = self.device_labels.get(key)
@@ -138,6 +200,27 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(4, 4, 4, 4)
 
+        layout.addWidget(self._build_device_status_group())
+        layout.addWidget(self._build_manual_flow_group())
+        layout.addWidget(self._build_rh_control_group())
+        layout.addWidget(self._build_chiller_group())
+        layout.addWidget(self._build_experiment_group())
+
+        # Settings
+        self.btn_settings = QPushButton("Settings")
+        self.btn_settings.clicked.connect(self.open_settings)
+        layout.addWidget(self.btn_settings)
+
+        layout.addStretch()
+
+        scroll = QScrollArea()
+        scroll.setWidget(panel)
+        scroll.setWidgetResizable(True)
+        scroll.setFixedWidth(370)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.main_layout.addWidget(scroll)
+
+    def _build_device_status_group(self) -> QGroupBox:
         # Devices — compact: colored-dot indicators + connect button on one row
         conn_group = QGroupBox("Devices")
         conn_vbox = QVBoxLayout()
@@ -194,8 +277,9 @@ class MainWindow(QMainWindow):
         conn_vbox.addLayout(conn_bottom)
 
         conn_group.setLayout(conn_vbox)
-        layout.addWidget(conn_group)
+        return conn_group
 
+    def _build_manual_flow_group(self) -> QGroupBox:
         # Manual Control
         manual_group = QGroupBox("Manual Control")
         manual_layout = QFormLayout()
@@ -226,8 +310,9 @@ class MainWindow(QMainWindow):
         manual_layout.addRow(self.chk_ramp_flow)
         manual_layout.addRow(self.btn_set_flow)
         manual_group.setLayout(manual_layout)
-        layout.addWidget(manual_group)
+        return manual_group
 
+    def _build_rh_control_group(self) -> QGroupBox:
         # RH Control
         rh_group = QGroupBox("RH Control (PID)")
         rh_layout = QFormLayout()
@@ -256,8 +341,9 @@ class MainWindow(QMainWindow):
         rh_layout.addRow(self.btn_toggle_rh_control)
         rh_layout.addRow("PID Status:", self.lbl_rh_pid_status)
         rh_group.setLayout(rh_layout)
-        layout.addWidget(rh_group)
+        return rh_group
 
+    def _build_chiller_group(self) -> QGroupBox:
         # Chiller Control
         chiller_group = QGroupBox("Chiller Control")
         chiller_layout = QFormLayout()
@@ -279,8 +365,9 @@ class MainWindow(QMainWindow):
         chiller_layout.addRow(self.lbl_chiller_monitor)
         
         chiller_group.setLayout(chiller_layout)
-        layout.addWidget(chiller_group)
+        return chiller_group
 
+    def _build_experiment_group(self) -> QGroupBox:
         # Experiment Control
         exp_group = QGroupBox("RH Ramp Experiment")
         exp_layout = QFormLayout()
@@ -374,21 +461,7 @@ class MainWindow(QMainWindow):
         self._on_experiment_mode_changed(self.combo_experiment_mode.currentText())
 
         exp_group.setLayout(exp_layout)
-        layout.addWidget(exp_group)
-
-        # Settings
-        self.btn_settings = QPushButton("Settings")
-        self.btn_settings.clicked.connect(self.open_settings)
-        layout.addWidget(self.btn_settings)
-
-        layout.addStretch()
-
-        scroll = QScrollArea()
-        scroll.setWidget(panel)
-        scroll.setWidgetResizable(True)
-        scroll.setFixedWidth(370)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.main_layout.addWidget(scroll)
+        return exp_group
 
     def _create_right_panel(self):
         self.plot_widget = RealTimePlotWidget()
@@ -477,16 +550,19 @@ class MainWindow(QMainWindow):
                     self._start_poll_worker()
 
     def _on_flow_ramp_finished(self):
+        # `finished` is emitted from run()'s finally block (after `error`, if any),
+        # so it always fires last — do all cleanup here exactly once. wait() ensures
+        # run() has fully returned before we drop the only reference to the QThread.
+        worker = self.flow_ramp_worker
         self.flow_ramp_worker = None
+        if worker is not None:
+            worker.wait()
         self.btn_set_flow.setEnabled(True)
         if self.controller.is_connected():
             self._start_poll_worker()
 
     def _on_flow_ramp_error(self, msg: str):
-        self.flow_ramp_worker = None
-        self.btn_set_flow.setEnabled(True)
-        if self.controller.is_connected():
-            self._start_poll_worker()
+        # Just report — thread cleanup and poll restart happen in _on_flow_ramp_finished.
         QMessageBox.warning(self, "Error", f"Failed to set flow: {msg}")
 
     def set_chiller_temp(self):

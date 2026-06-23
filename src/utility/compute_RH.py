@@ -66,11 +66,6 @@ def _magnus(dp: float, t: float) -> float:
 
 
 def _buck(dp: float, t: float) -> float:
-    """Buck (1981) enhanced Magnus equation over liquid water.
-    Uses Buck's enhanced coefficients which account for the variation of
-    the enthalpy of vaporisation with temperature, giving better accuracy
-    than plain Magnus variants across a wide range.
-    """
     a = 18.678
     b = 234.5
     c = 257.14

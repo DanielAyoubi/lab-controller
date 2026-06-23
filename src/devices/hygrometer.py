@@ -3,11 +3,16 @@ import time
 import re
 
 class Hygrometer:
-    def __init__(self, port: str, baudrate: int, timeout: float = 2.0, name: str = "Hygrometer"):
+    def __init__(self, port: str, baudrate: int, timeout: float = 2.0, name: str = "Hygrometer",
+                 read_timeout: float = 5.0, nudge_interval: float = 1.0):
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.name = name
+        # Max seconds to wait for a complete reading, and how often to re-send CR
+        # (a "nudge") while waiting for the device to respond.
+        self.read_timeout = read_timeout
+        self.nudge_interval = nudge_interval
         self.ser = None
         self.connected = False
         # Regex for: "DP = -7.6 C  AT = 24.1 C  RH = 23.5"
@@ -36,6 +41,7 @@ class Hygrometer:
         if self.ser and self.ser.is_open:
             self.ser.close()
             print(f"Disconnected {self.name}.")
+        self.connected = False
 
     def is_connected(self) -> bool:
         return self.connected
@@ -69,7 +75,7 @@ class Hygrometer:
         last_nudge = start_time
         buffer = b""
         
-        while (time.time() - start_time) < 5.0:
+        while (time.time() - start_time) < self.read_timeout:
             if self.ser.in_waiting:
                 buffer += self.ser.read(self.ser.in_waiting)
                 decoded = buffer.decode(errors="ignore")
@@ -81,8 +87,8 @@ class Hygrometer:
                         "hygrometer_temp": ambient,
                     }
 
-            # Nudge if stalled (every 1.0s) - no buffer reset needed
-            if (time.time() - last_nudge) > 1.0:
+            # Nudge if stalled - no buffer reset needed
+            if (time.time() - last_nudge) > self.nudge_interval:
                 self.ser.write(b"\r")
                 self.ser.flush()
                 last_nudge = time.time()

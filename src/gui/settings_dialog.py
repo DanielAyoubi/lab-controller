@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QFormLayout, QLineEdit, 
-    QSpinBox, QDoubleSpinBox, QDialogButtonBox, 
-    QTabWidget, QWidget, QCheckBox
+    QDialog, QVBoxLayout, QFormLayout, QLineEdit,
+    QSpinBox, QDoubleSpinBox, QDialogButtonBox,
+    QTabWidget, QWidget, QCheckBox, QLabel
 )
 
 class SettingsDialog(QDialog):
@@ -154,7 +154,6 @@ class SettingsDialog(QDialog):
         layout.addRow("Max Flow:", self.max_flow)
 
         # ── RH PI Controller ────────────────────────────────────────────────
-        from PyQt6.QtWidgets import QLabel
         layout.addRow(QLabel("── RH PI Controller ──"))
 
         self.rh_settling_time = QDoubleSpinBox()
@@ -216,7 +215,6 @@ class SettingsDialog(QDialog):
         layout.addRow("D filter τ:", self.rh_derivative_filter_tau)
 
         # ── Pre-conditioning stability ───────────────────────────────────────
-        from PyQt6.QtWidgets import QLabel
         layout.addRow(QLabel("── Pre-conditioning stability ──"))
 
         self.experiment_stability_readings = QSpinBox()

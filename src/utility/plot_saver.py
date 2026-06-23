@@ -24,7 +24,7 @@ def save_experiment_plot(csv_path: Optional[str], step_times: list, logger) -> O
 
     timestamps, dry_flows, wet_flows = [], [], []
     hyg_temps, chill_temps = [], []
-    rh_hyg, rh_chill = [], []
+    rh_hyg, rh_chill, rh_chill_cal = [], [], []
 
     for row in rows:
         try:
@@ -38,6 +38,7 @@ def save_experiment_plot(csv_path: Optional[str], step_times: list, logger) -> O
         chill_temps.append(_to_float(row.get("chiller_temp")))
         rh_hyg.append(_to_float(row.get("rh_hygrometer")))
         rh_chill.append(_to_float(row.get("rh_chiller")))
+        rh_chill_cal.append(_to_float(row.get("rh_chiller_calibrated")))
 
     if not timestamps:
         return None
@@ -47,7 +48,13 @@ def save_experiment_plot(csv_path: Optional[str], step_times: list, logger) -> O
 
     def _smooth(values):
         arr = np.array(values, dtype=float)
-        kernel = np.ones(window) / window
+        # Clamp the kernel to the series length so np.convolve(mode="same")
+        # returns an array the same length as the x-values (avoids a shape
+        # mismatch in ax.plot when a series has fewer points than `window`).
+        w = min(window, len(arr))
+        if w < 1:
+            return arr
+        kernel = np.ones(w) / w
         return np.convolve(arr, kernel, mode="same")
 
     def _plot_series_with_smooth(ax, ts_list, vals, label, color):
@@ -86,6 +93,7 @@ def save_experiment_plot(csv_path: Optional[str], step_times: list, logger) -> O
 
     _plot_series_with_smooth(ax2, timestamps, rh_hyg, "RH (hygrometer)", "mediumpurple")
     _plot_series_with_smooth(ax2, timestamps, rh_chill, "RH (chiller)", "royalblue")
+    _plot_series_with_smooth(ax2, timestamps, rh_chill_cal, "RH (chiller, calibrated)", "firebrick")
     ax2.set_ylabel("Relative humidity (%)")
     ax2.set_xlabel("Time")
     ax2.legend(loc="upper right", fontsize=8)

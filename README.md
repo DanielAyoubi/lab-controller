@@ -32,51 +32,65 @@ A desktop application for controlling the environmental humidity chamber of an N
    .venv\Scripts\pip install -r requirements.txt
    ```
 
-3. **Set machine-specific device settings:**
+3. **Set up the config file for this machine:**
 
-   Copy the template and edit it for this machine:
-   ```
-   cp src\configs\local_config.example.py src\configs\local_config.py
-   ```
-   Then open `src/configs/local_config.py` and fill in the correct values:
-   ```python
-   LOCAL_CONFIG = {
-       # COM ports
-       "dry_mfc_port":    "COM6",
-       "wet_mfc_port":    "COM7",
-       "hygrometer_port": "COM9",
-       "chiller_port":    "COM8",
-       # Baud rates
-       "mfc_baudrate":        9600,
-       "hygrometer_baudrate": 19200,
-       "chiller_baudrate":    9600,
-       # Modbus addresses
-       "dry_mfc_address": 1,
-       "wet_mfc_address": 247,
-       # Enable / disable devices
-       "dry_mfc_enabled":    True,
-       "wet_mfc_enabled":    True,
-       "hygrometer_enabled": True,
-       "chiller_enabled":    True,
+   Open `src/configs/config.json` and set the COM ports, baud rates, addresses,
+   and enable flags for this machine (plus any experiment defaults you want to change):
+   ```json
+   {
+     "dry_mfc_port": "COM6",
+     "wet_mfc_port": "COM7",
+     "hygrometer_port": "COM9",
+     "chiller_port": "COM8",
+     "mfc_baudrate": 9600,
+     "hygrometer_baudrate": 19200,
+     "chiller_baudrate": 9600,
+     "dry_mfc_address": 1,
+     "wet_mfc_address": 247,
+     "dry_mfc_enabled": true,
+     "wet_mfc_enabled": true,
+     "hygrometer_enabled": true,
+     "chiller_enabled": true
    }
    ```
-   `local_config.py` is gitignored — it stays on the machine permanently and is never committed.
 
 4. **Run the application:**
    ```
    python main.py
    ```
 
+## Building a standalone executable
+
+To run the app without Python installed, package it into a single Windows
+executable with PyInstaller:
+
+```
+build.bat
+```
+
+This installs PyInstaller (if needed), builds from `LabController.spec`, and
+produces:
+
+| File | Purpose |
+|------|---------|
+| `dist\LabController.exe` | The application — double-click to run |
+| `dist\config.json` | Editable config; set COM ports / settings here |
+
+**Distribute both files together** (keep them in the same folder). On startup the
+exe prefers the `config.json` sitting next to it, so device ports can be changed
+without rebuilding. A default copy is also bundled inside the exe as a fallback.
+
+> To build manually instead of using the script:
+> `.venv\Scripts\pyinstaller --noconfirm --clean LabController.spec`
+
 ## Configuration
 
-Configuration is split across two files:
+All settings live in a single JSON file, **`src/configs/config.json`**. It holds
+both the machine-specific device settings and the application/experiment defaults.
 
-- **`src/configs/config.py`** (committed) — application and experiment defaults. Edit this to change experiment behaviour for everyone.
-- **`src/configs/local_config.py`** (gitignored) — all device-specific settings for this machine. Keys here override `config.py` at startup.
+Settings can also be changed at runtime through the **Settings** dialog (General / Devices / Experiment tabs) — changes are held in memory for the session only and are not written back to `config.json`.
 
-Settings can also be changed at runtime through the **Settings** dialog (General / Devices / Experiment tabs) — changes are held in memory for the session only.
-
-### `local_config.py` keys (device settings)
+### Device settings
 
 | Key | Default | Description |
 |-----|---------|-------------|
@@ -87,23 +101,23 @@ Settings can also be changed at runtime through the **Settings** dialog (General
 | `hygrometer_baudrate` | 19200 | Baud rate for the hygrometer |
 | `chiller_baudrate` | 9600 | Baud rate for the chiller |
 | `dry_mfc_address` / `wet_mfc_address` | 1 / 247 | Modbus unit addresses |
-| `dry/wet_mfc_enabled` | True | Enable/disable each MFC |
-| `hygrometer_enabled` / `chiller_enabled` | True | Enable/disable hygrometer / chiller |
+| `dry/wet_mfc_enabled` | true | Enable/disable each MFC |
+| `hygrometer_enabled` / `chiller_enabled` | true | Enable/disable hygrometer / chiller |
 
-### `config.py` keys (application & experiment settings)
+### Application & experiment settings
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `control_interval` | 5000 ms | Sensor poll period |
+| `control_interval` | 2000 ms | Sensor poll period |
 | `max_flow` | 2.0 L/min | Total flow used during experiments |
+| `flow_ramp_step` | 0.05 L/min | Increment per step when ramping manual flow changes |
 | `log_dir` / `log_prefix` | `data` / `nsim_log` | CSV output directory and filename prefix |
-| `experiment_step_size` | 5.0 % | Wet-flow increment per experiment step |
 | `experiment_hold_time` | 180 s | Wait time at each step |
 | `experiment_rh_lower` / `experiment_rh_upper` | 0 / 90 % | RH limits for experiment stop and pre-conditioning |
 | `rh_kp` / `rh_ki` / `rh_kd` | 0.02 / 0.001 / 0.05 | PID gains (set `rh_kd = 0` to disable D term) |
 | `rh_deadband` | 1.0 % | Minimum RH error that triggers a correction |
 | `rh_settling_time` | 200 s | Max wait after a full-scale flow change |
-| `rh_settling_time_min` | 30 s | Min wait regardless of step size |
+| `rh_settling_time_min` | 10 s | Min wait regardless of step size |
 | `rh_max_step` | 0.05 | Wet-ratio change ceiling at 100 % error |
 
 ## Project Structure
@@ -114,9 +128,7 @@ lab-controller/
 ├── requirements.txt
 ├── src/
 │   ├── configs/
-│   │   ├── config.py                # Default configuration (committed)
-│   │   ├── local_config.py          # Machine-specific device settings (gitignored)
-│   │   └── local_config.example.py  # Template for local_config.py
+│   │   └── config.json              # Machine-specific configuration
 │   ├── devices/
 │   │   ├── controller.py            # Central orchestrator: device refs, PI loop, experiment runner
 │   │   ├── vogtlin_mfc.py           # Modbus RTU driver (minimalmodbus, big-endian 32-bit floats)
@@ -176,7 +188,7 @@ At experiment end a smoothed PNG summary plot is saved alongside the CSV.
 
 ## Troubleshooting
 
-**Device not connecting** — Check the COM port name in `local_config.py` (or the Settings → Devices dialog), confirm the device is powered on, and ensure no other software (e.g. PuTTY, another Python process) is holding the port open.
+**Device not connecting** — Check the COM port name in `config.json` (or the Settings → Devices dialog), confirm the device is powered on, and ensure no other software (e.g. PuTTY, another Python process) is holding the port open.
 
 **Wrong readings after settings change** — Port and baud rate changes only take effect after disconnecting and reconnecting devices.
 

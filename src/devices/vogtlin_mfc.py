@@ -53,6 +53,7 @@ class VogtlinMFC:
                 pass
             self.instrument.serial.close()
             print(f"Disconnected {self.name}.")
+        self.connected = False
 
     def is_connected(self) -> bool:
         return self.connected

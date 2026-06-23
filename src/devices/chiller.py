@@ -36,6 +36,7 @@ class JulaboChiller:
             self.ser.close()
             print("Chiller connection closed.")
             self.ser = None
+        self.connected = False
 
     def is_connected(self) -> bool:
         return self.connected

@@ -2,26 +2,26 @@ from typing import Dict, Optional
 from collections import deque
 from datetime import datetime
 import numpy as np
-import matplotlib.pyplot as plt
-
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-from matplotlib.dates import DateFormatter
-import matplotlib.dates as mdates
+import pyqtgraph as pg
 
 from PyQt6.QtWidgets import QWidget, QVBoxLayout
+from PyQt6.QtCore import Qt
 
-class MplCanvas(FigureCanvas):
-    def __init__(self, parent=None, width=5, height=4, dpi=100):
-        self.fig = Figure(figsize=(width, height), dpi=dpi)
-        self.axes = self.fig.subplots(3, 1, sharex=True)
-        super(MplCanvas, self).__init__(self.fig)
+
+# Match Matplotlib's single-letter colours so the appearance is preserved.
+_COLORS = {
+    "b": (0, 0, 255),
+    "r": (255, 0, 0),
+    "g": (0, 128, 0),
+    "c": (0, 191, 191),
+}
+
 
 class RealTimePlotWidget(QWidget):
     def __init__(self, max_points: int = 500):
         super().__init__()
         self.max_points = max_points
-        
+
         # Data storage
         self.timestamps = deque(maxlen=max_points)
         self.dry_flow = deque(maxlen=max_points)
@@ -34,11 +34,14 @@ class RealTimePlotWidget(QWidget):
         self.chiller_setpoint = deque(maxlen=max_points)
         self.rh_hygrometer = deque(maxlen=max_points)
         self.rh_chiller = deque(maxlen=max_points)
+        self.rh_chiller_calibrated = deque(maxlen=max_points)
 
         # Layout
+        pg.setConfigOptions(antialias=True, background="w", foreground="k")
         layout = QVBoxLayout()
-        self.canvas = MplCanvas(self, width=5, height=10, dpi=100)
-        layout.addWidget(self.canvas)
+        self.glw = pg.GraphicsLayoutWidget()
+        self.glw.setBackground("w")
+        layout.addWidget(self.glw)
         self.setLayout(layout)
 
         self._lines = {}
@@ -58,48 +61,68 @@ class RealTimePlotWidget(QWidget):
         self.chiller_setpoint = deque(self.chiller_setpoint, maxlen=max_points)
         self.rh_hygrometer = deque(self.rh_hygrometer, maxlen=max_points)
         self.rh_chiller = deque(self.rh_chiller, maxlen=max_points)
+        self.rh_chiller_calibrated = deque(self.rh_chiller_calibrated, maxlen=max_points)
+
+    def _solid_line(self, plot, key, color, label):
+        """Solid line with a dot marker at every point (Matplotlib '<c>.-')."""
+        rgb = _COLORS[color]
+        self._lines[key] = plot.plot(
+            [],
+            [],
+            pen=pg.mkPen(rgb, width=1),
+            symbol="o",
+            symbolSize=4,
+            symbolBrush=rgb,
+            symbolPen=None,
+            name=label,
+        )
+
+    def _dashed_line(self, plot, key, color, label):
+        """Semi-transparent dashed line, no markers (Matplotlib '<c>--' alpha=0.5)."""
+        rgb = _COLORS[color]
+        pen = pg.mkPen((*rgb, 128), width=1, style=Qt.PenStyle.DashLine)
+        self._lines[key] = plot.plot([], [], pen=pen, name=label)
+
+    def _style_plot(self, plot, title, y_label, x_label=None):
+        plot.setTitle(f"<b>{title}</b>", size="10pt")
+        plot.setLabel("left", y_label)
+        if x_label:
+            plot.setLabel("bottom", x_label)
+        plot.showGrid(x=True, y=True, alpha=0.3)
+        plot.addLegend(offset=(10, 10))
 
     def _setup_plots(self):
-        ax1, ax2, ax3 = self.canvas.axes
+        axis1 = pg.DateAxisItem(orientation="bottom")
+        axis2 = pg.DateAxisItem(orientation="bottom")
+        axis3 = pg.DateAxisItem(orientation="bottom")
+
+        self.p1 = self.glw.addPlot(row=0, col=0, axisItems={"bottom": axis1})
+        self.p2 = self.glw.addPlot(row=1, col=0, axisItems={"bottom": axis2})
+        self.p3 = self.glw.addPlot(row=2, col=0, axisItems={"bottom": axis3})
+
+        # Shared x-axis (replaces Matplotlib sharex=True)
+        self.p2.setXLink(self.p1)
+        self.p3.setXLink(self.p1)
 
         # Plot 1: Flow rates
-        self._lines['dry_actual'], = ax1.plot([], [], "b.-", label="Dry Actual")
-        self._lines['dry_set'], = ax1.plot([], [], "b--", alpha=0.5, label="Dry Set")
-        self._lines['wet_actual'], = ax1.plot([], [], "r.-", label="Wet Actual")
-        self._lines['wet_set'], = ax1.plot([], [], "r--", alpha=0.5, label="Wet Set")
-        
-        ax1.set_title("Mass Flow Controllers", fontweight="bold", fontsize=10)
-        ax1.set_ylabel("Flow (L/min)", fontsize=9)
-        ax1.grid(True, alpha=0.3)
-        ax1.legend(loc="upper left", fontsize='small')
-        
-        # Plot 2: Temperature
-        self._lines['hygrometer'], = ax2.plot([], [], "g.-", label="Hygrometer")
-        self._lines['dewpoint'], = ax2.plot([], [], "c.-", label="Dewpoint")
-        self._lines['chiller'], = ax2.plot([], [], "b.-", label="Chiller")
-        self._lines['chiller_set'], = ax2.plot([], [], "b--", alpha=0.5, label="Chiller Set")
+        self._style_plot(self.p1, "Mass Flow Controllers", "Flow (L/min)")
+        self._solid_line(self.p1, "dry_actual", "b", "Dry Actual")
+        self._dashed_line(self.p1, "dry_set", "b", "Dry Set")
+        self._solid_line(self.p1, "wet_actual", "r", "Wet Actual")
+        self._dashed_line(self.p1, "wet_set", "r", "Wet Set")
 
-        ax2.set_title("Temperature", fontweight="bold", fontsize=10)
-        ax2.set_ylabel("Temp (°C)", fontsize=9)
-        ax2.grid(True, alpha=0.3)
-        ax2.legend(loc="upper left", fontsize='small')
+        # Plot 2: Temperature
+        self._style_plot(self.p2, "Temperature", "Temp (°C)")
+        self._solid_line(self.p2, "hygrometer", "g", "Hygrometer")
+        self._solid_line(self.p2, "dewpoint", "c", "Dewpoint")
+        self._solid_line(self.p2, "chiller", "b", "Chiller")
+        self._dashed_line(self.p2, "chiller_set", "b", "Chiller Set")
 
         # Plot 3: Humidity
-        self._lines['rh_hygrometer'], = ax3.plot([], [], "g.-", label="RH (Hygrometer Temp)")
-        self._lines['rh_chiller'], = ax3.plot([], [], "b.-", label="RH (Chiller Temp)")
-
-        ax3.set_title("Relative Humidity", fontweight="bold", fontsize=10)
-        ax3.set_ylabel("RH (%)", fontsize=9)
-        ax3.set_xlabel("Time", fontsize=9)
-        ax3.grid(True, alpha=0.3)
-        ax3.legend(loc="upper left", fontsize='small')
-
-        # Format Date
-        date_fmt = DateFormatter("%H:%M:%S")
-        ax3.xaxis.set_major_formatter(date_fmt)
-        plt.setp(ax3.xaxis.get_majorticklabels(), rotation=45, ha="right")
-
-        self.canvas.fig.tight_layout()
+        self._style_plot(self.p3, "Relative Humidity", "RH (%)", x_label="Time")
+        self._solid_line(self.p3, "rh_hygrometer", "g", "RH (Hygrometer Temp)")
+        self._solid_line(self.p3, "rh_chiller", "b", "RH (Chiller Temp)")
+        self._solid_line(self.p3, "rh_chiller_calibrated", "r", "RH (Chiller Temp, Calibrated)")
 
     def update_plot(self, data: Dict[str, Optional[float]]):
         # Parse timestamp
@@ -127,6 +150,7 @@ class RealTimePlotWidget(QWidget):
         self.chiller_setpoint.append(_coerce(data.get("chiller_setpoint")))
         self.rh_hygrometer.append(_coerce(data.get("rh_hygrometer")))
         self.rh_chiller.append(_coerce(data.get("rh_chiller")))
+        self.rh_chiller_calibrated.append(_coerce(data.get("rh_chiller_calibrated")))
 
         self._redraw()
 
@@ -134,8 +158,8 @@ class RealTimePlotWidget(QWidget):
         if len(self.timestamps) == 0:
             return
 
-        # Convert timestamps to numpy array once for efficiency
-        time_data = np.array(mdates.date2num(list(self.timestamps)))
+        # DateAxisItem expects POSIX seconds on the x-axis.
+        time_data = np.array([t.timestamp() for t in self.timestamps], dtype=np.float64)
 
         # Convert all deques to numpy arrays once
         dry_flow_data = np.array(list(self.dry_flow), dtype=np.float64)
@@ -148,31 +172,27 @@ class RealTimePlotWidget(QWidget):
         chiller_setpoint_data = np.array(list(self.chiller_setpoint), dtype=np.float64)
         rh_hygrometer_data = np.array(list(self.rh_hygrometer), dtype=np.float64)
         rh_chiller_data = np.array(list(self.rh_chiller), dtype=np.float64)
+        rh_chiller_calibrated_data = np.array(list(self.rh_chiller_calibrated), dtype=np.float64)
 
         # Helper to update line with valid data only (to ensure lines connect)
         def update_line_filtered(line, y_data):
             # Filter valid data
             mask = ~np.isnan(y_data)
             if np.any(mask):
-                line.set_data(time_data[mask], y_data[mask])
+                line.setData(time_data[mask], y_data[mask])
             else:
-                line.set_data([], [])
-        
-        update_line_filtered(self._lines['dry_actual'], dry_flow_data)
-        update_line_filtered(self._lines['dry_set'], dry_setpoint_data)
-        update_line_filtered(self._lines['wet_actual'], wet_flow_data)
-        update_line_filtered(self._lines['wet_set'], wet_setpoint_data)
-        
-        update_line_filtered(self._lines['hygrometer'], hygrometer_temp_data)
-        update_line_filtered(self._lines['dewpoint'], dewpoint_temp_data)
-        update_line_filtered(self._lines['chiller'], chiller_temp_data)
-        update_line_filtered(self._lines['chiller_set'], chiller_setpoint_data)
-        
-        update_line_filtered(self._lines['rh_hygrometer'], rh_hygrometer_data)
-        update_line_filtered(self._lines['rh_chiller'], rh_chiller_data)
+                line.setData([], [])
 
-        for ax in self.canvas.axes:
-            ax.relim()
-            ax.autoscale_view()
+        update_line_filtered(self._lines["dry_actual"], dry_flow_data)
+        update_line_filtered(self._lines["dry_set"], dry_setpoint_data)
+        update_line_filtered(self._lines["wet_actual"], wet_flow_data)
+        update_line_filtered(self._lines["wet_set"], wet_setpoint_data)
 
-        self.canvas.draw_idle()
+        update_line_filtered(self._lines["hygrometer"], hygrometer_temp_data)
+        update_line_filtered(self._lines["dewpoint"], dewpoint_temp_data)
+        update_line_filtered(self._lines["chiller"], chiller_temp_data)
+        update_line_filtered(self._lines["chiller_set"], chiller_setpoint_data)
+
+        update_line_filtered(self._lines["rh_hygrometer"], rh_hygrometer_data)
+        update_line_filtered(self._lines["rh_chiller"], rh_chiller_data)
+        update_line_filtered(self._lines["rh_chiller_calibrated"], rh_chiller_calibrated_data)
