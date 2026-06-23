@@ -516,6 +516,16 @@ class MainWindow(QMainWindow):
                 QMessageBox.critical(self, "Error", str(e))
         else:
             self._stop_poll_worker()
+            # Clear any active RH control so a new session never silently resumes
+            # control with a stale setpoint after the next Connect.
+            if self.controller.rh_control_active:
+                self.controller.set_rh_control_active(False)
+            self.btn_toggle_rh_control.setText("Start RH Control")
+            self.btn_toggle_rh_control.setStyleSheet("")
+            self.lbl_rh_pid_status.setText("Inactive")
+            self.lbl_rh_pid_status.setStyleSheet("color: gray")
+            self.spin_rh_target.setEnabled(True)
+            self.spin_rh_total_flow.setEnabled(True)
             self.controller.logger.close()
             self.controller.disconnect_devices()
             self.btn_connect.setText("Connect")
@@ -647,6 +657,9 @@ class MainWindow(QMainWindow):
 
             self.btn_start_exp.setText("Stop Experiment")
             self.btn_set_flow.setEnabled(False)
+            # Block disconnecting mid-experiment — it would close the serial ports
+            # out from under the running experiment thread. Stop the experiment first.
+            self.btn_connect.setEnabled(False)
 
     def _on_experiment_progress(self, msg: str):
         if msg.startswith("PLOT_PATH:"):
@@ -665,6 +678,7 @@ class MainWindow(QMainWindow):
         self.btn_start_exp.setText("Start Experiment")
         self.btn_start_exp.setEnabled(True)
         self.btn_set_flow.setEnabled(True)
+        self.btn_connect.setEnabled(True)
 
         if was_cancelled:
             return
@@ -688,6 +702,7 @@ class MainWindow(QMainWindow):
         self.btn_start_exp.setText("Start Experiment")
         self.btn_start_exp.setEnabled(True)
         self.btn_set_flow.setEnabled(True)
+        self.btn_connect.setEnabled(True)
         self._last_plot_path = None
         QMessageBox.critical(self, "Experiment Error", msg)
 
