@@ -78,7 +78,18 @@ class SettingsDialog(QDialog):
         
         self.wet_mfc_port = QLineEdit(self.config.get("wet_mfc_port", "COM7"))
         layout.addRow("Wet MFC Port:", self.wet_mfc_port)
-        
+
+        # Modbus RTU slave addresses (1–247) for the two MFCs.
+        self.dry_mfc_address = QSpinBox()
+        self.dry_mfc_address.setRange(1, 247)
+        self.dry_mfc_address.setValue(int(self.config.get("dry_mfc_address", 1)))
+        layout.addRow("Dry MFC Address:", self.dry_mfc_address)
+
+        self.wet_mfc_address = QSpinBox()
+        self.wet_mfc_address.setRange(1, 247)
+        self.wet_mfc_address.setValue(int(self.config.get("wet_mfc_address", 247)))
+        layout.addRow("Wet MFC Address:", self.wet_mfc_address)
+
         self.hygrometer_port = QLineEdit(self.config.get("hygrometer_port", "COM9"))
         layout.addRow("Hygrometer Port:", self.hygrometer_port)
 
@@ -153,8 +164,39 @@ class SettingsDialog(QDialog):
         self.max_flow.setSuffix(" L/min")
         layout.addRow("Max Flow:", self.max_flow)
 
-        # ── RH PI Controller ────────────────────────────────────────────────
-        layout.addRow(QLabel("── RH PI Controller ──"))
+        # ── RH Feedforward + PI Controller ──────────────────────────────────
+        layout.addRow(QLabel("── RH Feedforward + PI Controller ──"))
+
+        # Feedforward: wet_ratio = ff_gain·(target/100) + ff_offset.
+        # Physics gives gain≈1, offset≈0; calibrate per bubbler from a flow run.
+        self.rh_ff_gain = QDoubleSpinBox()
+        self.rh_ff_gain.setDecimals(3)
+        self.rh_ff_gain.setRange(0.1, 2.0)
+        self.rh_ff_gain.setSingleStep(0.01)
+        self.rh_ff_gain.setValue(self.config.get("rh_ff_gain", 1.0))
+        layout.addRow("Feedforward gain:", self.rh_ff_gain)
+
+        self.rh_ff_offset = QDoubleSpinBox()
+        self.rh_ff_offset.setDecimals(3)
+        self.rh_ff_offset.setRange(-0.5, 0.5)
+        self.rh_ff_offset.setSingleStep(0.01)
+        self.rh_ff_offset.setValue(self.config.get("rh_ff_offset", 0.0))
+        layout.addRow("Feedforward offset:", self.rh_ff_offset)
+
+        self.rh_dead_time = QDoubleSpinBox()
+        self.rh_dead_time.setDecimals(0)
+        self.rh_dead_time.setRange(0.0, 300.0)
+        self.rh_dead_time.setSingleStep(5.0)
+        self.rh_dead_time.setValue(self.config.get("rh_dead_time", 25.0))
+        self.rh_dead_time.setSuffix(" s")
+        layout.addRow("Transport dead time:", self.rh_dead_time)
+
+        self.rh_trim_limit = QDoubleSpinBox()
+        self.rh_trim_limit.setDecimals(2)
+        self.rh_trim_limit.setRange(0.05, 1.0)
+        self.rh_trim_limit.setSingleStep(0.05)
+        self.rh_trim_limit.setValue(self.config.get("rh_trim_limit", 0.6))
+        layout.addRow("Max feedback trim:", self.rh_trim_limit)
 
         self.rh_settling_time = QDoubleSpinBox()
         self.rh_settling_time.setRange(5.0, 600.0)
@@ -178,26 +220,19 @@ class SettingsDialog(QDialog):
         self.rh_deadband.setSuffix(" %")
         layout.addRow("Deadband (±):", self.rh_deadband)
 
-        self.rh_max_step = QDoubleSpinBox()
-        self.rh_max_step.setDecimals(3)
-        self.rh_max_step.setRange(0.001, 0.5)
-        self.rh_max_step.setSingleStep(0.005)
-        self.rh_max_step.setValue(self.config.get("rh_max_step", 0.05))
-        layout.addRow("Max step at ±100% error:", self.rh_max_step)
-
         self.rh_kp = QDoubleSpinBox()
         self.rh_kp.setDecimals(4)
         self.rh_kp.setRange(0.0001, 1.0)
         self.rh_kp.setSingleStep(0.001)
-        self.rh_kp.setValue(self.config.get("rh_kp", 0.02))
-        layout.addRow("Kp:", self.rh_kp)
+        self.rh_kp.setValue(self.config.get("rh_kp", 0.01))
+        layout.addRow("Kp (trim):", self.rh_kp)
 
         self.rh_ki = QDoubleSpinBox()
         self.rh_ki.setDecimals(5)
         self.rh_ki.setRange(0.00001, 0.1)
         self.rh_ki.setSingleStep(0.0001)
-        self.rh_ki.setValue(self.config.get("rh_ki", 0.001))
-        layout.addRow("Ki:", self.rh_ki)
+        self.rh_ki.setValue(self.config.get("rh_ki", 0.002))
+        layout.addRow("Ki (trim):", self.rh_ki)
 
         self.rh_kd = QDoubleSpinBox()
         self.rh_kd.setDecimals(4)
@@ -248,6 +283,8 @@ class SettingsDialog(QDialog):
             "chiller_enabled": bool(self.chiller_enabled.isChecked()),
             "dry_mfc_port": self.dry_mfc_port.text(),
             "wet_mfc_port": self.wet_mfc_port.text(),
+            "dry_mfc_address": self.dry_mfc_address.value(),
+            "wet_mfc_address": self.wet_mfc_address.value(),
             "hygrometer_port": self.hygrometer_port.text(),
             "chiller_port": self.chiller_port.text(),
             "mfc_baudrate": self.mfc_baudrate.value(),
@@ -259,10 +296,13 @@ class SettingsDialog(QDialog):
             "experiment_rh_step": self.experiment_rh_step.value(),
             "experiment_hold_time": self.experiment_hold_time.value(),
             "max_flow": self.max_flow.value(),
+            "rh_ff_gain": self.rh_ff_gain.value(),
+            "rh_ff_offset": self.rh_ff_offset.value(),
+            "rh_dead_time": self.rh_dead_time.value(),
+            "rh_trim_limit": self.rh_trim_limit.value(),
             "rh_settling_time": self.rh_settling_time.value(),
             "rh_settling_time_min": self.rh_settling_time_min.value(),
             "rh_deadband": self.rh_deadband.value(),
-            "rh_max_step": self.rh_max_step.value(),
             "rh_kp": self.rh_kp.value(),
             "rh_ki": self.rh_ki.value(),
             "rh_kd": self.rh_kd.value(),

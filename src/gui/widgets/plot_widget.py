@@ -63,6 +63,19 @@ class RealTimePlotWidget(QWidget):
         self.rh_chiller = deque(self.rh_chiller, maxlen=max_points)
         self.rh_chiller_calibrated = deque(self.rh_chiller_calibrated, maxlen=max_points)
 
+    def clear(self):
+        """Drop all buffered data and blank every line on the plot."""
+        for d in (
+            self.timestamps, self.dry_flow, self.wet_flow,
+            self.dry_setpoint, self.wet_setpoint,
+            self.hygrometer_temp, self.dewpoint_temp,
+            self.chiller_temp, self.chiller_setpoint,
+            self.rh_hygrometer, self.rh_chiller, self.rh_chiller_calibrated,
+        ):
+            d.clear()
+        for line in self._lines.values():
+            line.setData([], [])
+
     def _solid_line(self, plot, key, color, label):
         """Solid line with a dot marker at every point (Matplotlib '<c>.-')."""
         rgb = _COLORS[color]

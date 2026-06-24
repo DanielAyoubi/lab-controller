@@ -26,6 +26,14 @@ class Hygrometer:
         self.disconnect()
 
     def connect(self):
+        # Close any stale handle first so reconnecting after a dropout re-opens
+        # the port cleanly.
+        if self.ser is not None:
+            try:
+                self.ser.close()
+            except Exception:
+                pass
+            self.ser = None
         try:
             self.ser = serial.Serial(self.port, self.baudrate, timeout=self.timeout)
             time.sleep(1)

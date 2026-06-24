@@ -7,7 +7,7 @@ A desktop application for controlling the environmental humidity chamber of an N
 - **Mass Flow Control** — Vögtlin Modbus RTU MFCs for dry and wet air; manual and ramped setpoints
 - **Hygrometer** — DewMaster serial driver; dew-point, ambient temperature, and RH readings
 - **Chiller** — Julabo ASCII serial driver; temperature setpoint and external probe readback
-- **PID RH Control** — Automatic wet/dry flow ratio adjustment to hold a target RH; settling guard, deadband, dynamic step clamping, and optional D term
+- **Feedforward + PI RH Control** — Automatic wet/dry flow ratio adjustment to hold a target RH; a static feedforward model jumps straight to the right ratio (fast settling) while a gentle PI(D) term trims the residual, with a dead-time-aware settling guard and deadband. The feedforward is calibrated from a flow-ramp log (see below)
 - **Automated RH Ramp Experiment** — Steps wet-flow ratio from 0 → 100 % (or reverse) with configurable hold time, pre-conditioning phase, and RH stop limits; saves CSV log and PNG summary plot
 - **Real-time Plot** — 3-panel live chart: flow rates, temperatures, RH
 - **CSV Data Logging** — Timestamped CSV written to date-organised sub-folders; separate files for background monitoring and experiments
@@ -104,21 +104,136 @@ Settings can also be changed at runtime through the **Settings** dialog (General
 | `dry/wet_mfc_enabled` | true | Enable/disable each MFC |
 | `hygrometer_enabled` / `chiller_enabled` | true | Enable/disable hygrometer / chiller |
 
-### Application & experiment settings
+### Logging & plot
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `control_interval` | 2000 ms | Sensor poll period |
-| `max_flow` | 2.0 L/min | Total flow used during experiments |
-| `flow_ramp_step` | 0.05 L/min | Increment per step when ramping manual flow changes |
 | `log_dir` / `log_prefix` | `data` / `nsim_log` | CSV output directory and filename prefix |
-| `experiment_hold_time` | 180 s | Wait time at each step |
-| `experiment_rh_lower` / `experiment_rh_upper` | 0 / 90 % | RH limits for experiment stop and pre-conditioning |
-| `rh_kp` / `rh_ki` / `rh_kd` | 0.02 / 0.001 / 0.05 | PID gains (set `rh_kd = 0` to disable D term) |
-| `rh_deadband` | 1.0 % | Minimum RH error that triggers a correction |
-| `rh_settling_time` | 200 s | Max wait after a full-scale flow change |
-| `rh_settling_time_min` | 10 s | Min wait regardless of step size |
-| `rh_max_step` | 0.05 | Wet-ratio change ceiling at 100 % error |
+| `max_plot_points` | 500 | Max points kept in the live plot before old ones drop off |
+| `control_interval` | 2000 ms | Sensor poll period (**milliseconds**) |
+
+### Flow
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `max_flow` | 1.0 L/min | Total combined flow; dry + wet always sums to this during experiments |
+| `flow_ramp_step` | 0.05 L/min | Increment per step when ramping manual flow changes (1 s/step) |
+
+### Experiment
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `experiment_mode` | `flow` | `flow` = open-loop wet-flow ramp; `rh` = PI-controlled RH ramp |
+| `experiment_hold_time` | 180 s | Wait time collecting data at each step |
+| `experiment_flow_start` / `_end` / `_step` | 0.0 / 2.0 / 0.1 L/min | Flow-mode wet-flow ramp range and increment |
+| `experiment_rh_lower` / `_upper` / `experiment_rh_step` | 0 / 90 / 5 % | RH-mode ramp range and increment (also the pre-conditioning bounds) |
+| `experiment_stability_readings` | 5 | RH-mode: consecutive in-deadband readings required for "stable" |
+| `experiment_stability_timeout` | 800 s | RH-mode: max wait for stability before moving on |
+
+### RH control loop — feedforward
+
+The controller commands the wet-flow ratio as **`wet_ratio = rh_ff_gain · (target_RH / 100) + rh_ff_offset`** (the feedforward), then trims the small remaining error with PI(D). The feedforward is what makes settling fast; calibrate it with the tool described in [Calibrating the RH feedforward](#calibrating-the-rh-feedforward).
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `rh_ff_gain` | 1.0 | Feedforward slope. Physics gives ≈ 1.0 (RH ≈ 100 · wet_ratio); raise it if the bubbler under-saturates |
+| `rh_ff_offset` | 0.0 | Feedforward intercept (wet-ratio offset). Usually ≈ 0 |
+| `rh_dead_time` | 25 s | Transport delay between a flow change and the hygrometer registering it. Floors the wait between corrections so each move is judged after its effect arrives |
+| `rh_trim_limit` | 0.6 | Ceiling on the feedback wet-ratio added to the feedforward (prevents a noisy reading flinging the ratio) |
+
+### RH control loop — PI(D) trim & guards
+
+These act only on the *residual* error the feedforward leaves behind, so the gains are deliberately gentle.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `rh_kp` | 0.01 | Proportional trim gain |
+| `rh_ki` | 0.002 | Integral trim gain — accumulates the (≈ constant) calibration bias; carried across setpoints |
+| `rh_kd` | 0.05 | Derivative gain on the measurement (set `0.0` to disable the D term) |
+| `rh_derivative_filter_tau` | 30 s | Low-pass filter time constant for the D term |
+| `rh_integral_limit` | 0.5 | Anti-windup ceiling on the integral accumulator |
+| `rh_deadband` | 1.0 % | Ignore RH errors smaller than this to avoid chasing sensor noise |
+| `rh_settling_time` | 200 s | Max wait after a full-scale flow change before the next correction |
+| `rh_settling_time_min` | 10 s | Min wait after any flow change (floored at `rh_dead_time`) |
+
+## Calibrating the RH feedforward
+
+The RH controller assumes a **static inverse model** of the plant: with a saturating
+bubble bath on the wet line and dry gas on the other, the steady-state RH is, to
+first order, just the mixing ratio — so the wet-flow ratio needed for a target RH is
+
+```
+wet_ratio = rh_ff_gain · (target_RH / 100) + rh_ff_offset
+```
+
+`rh_ff_gain ≈ 1` and `rh_ff_offset ≈ 0` are the physics defaults, but a real bubbler
+slightly under-saturates and the probe has a small offset, so the true line is a bit
+off. Calibrating these two numbers lets the feedforward land the **first** flow move
+within ~1 % RH instead of crawling there, which is the bulk of the speed-up.
+
+### How it works
+
+A **flow-mode** experiment steps the wet flow open-loop and holds at each step, so the
+settled RH at every step is a clean `(RH, wet_ratio)` sample of the map above. The
+calibration tool:
+
+1. Reads the experiment's CSV log.
+2. Groups the rows into steps (by changes in the commanded wet ratio) and averages the
+   **settled tail** of each step (last 50 % of its rows), discarding the transient.
+3. Least-squares fits the line `wet_ratio = gain · (RH / 100) + offset` and reports the
+   two values plus the fit quality (R²).
+
+### How to use it
+
+1. Run a **flow-mode** ramp (`experiment_mode: "flow"`, e.g. wet flow 0 → `max_flow`)
+   so the chamber visits a spread of RH values and settles at each.
+2. Run the tool on the resulting log:
+
+   ```
+   .venv\Scripts\python -m src.utility.calibrate_feedforward
+   ```
+
+   With no arguments it picks the most recent `RH_ramp_*.csv` under `data/`. Pass a
+   path to choose a specific log:
+
+   ```
+   .venv\Scripts\python -m src.utility.calibrate_feedforward data\24_06_2026\RH_ramp_20260624_101500.csv
+   ```
+
+3. It prints the per-step points, the fitted line, and suggested values:
+
+   ```
+        RH (%)  wet_ratio   rows
+          2.03     0.0000     20
+         ...
+         94.04     1.0000     20
+
+     Fit:  wet_ratio = 1.0871·(RH/100) + -0.0216     R² = 1.0000
+
+     Suggested config.json values:
+       "rh_ff_gain": 1.0871,
+       "rh_ff_offset": -0.0216,
+   ```
+
+4. Copy those two values into `config.json`, or let the tool write them for you
+   (comments/formatting preserved — though `config.json` is comment-free by default):
+
+   ```
+   .venv\Scripts\python -m src.utility.calibrate_feedforward --apply
+   ```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--rh chiller\|hygrometer\|calibrated\|auto` | Which RH column to fit against. Default `auto` picks the best-populated; use `chiller` to match what the controller tracks when the chiller probe is connected |
+| `--settle-frac <0–1>` | Fraction of each step's tail averaged as "settled" (default `0.5`) |
+| `--apply` | Write `rh_ff_gain` / `rh_ff_offset` back into `src/configs/config.json` |
+
+The tool warns if R² < 0.95 (noisy or not-yet-settled data — try a longer
+`experiment_hold_time`) or if the gain is far from the ~1.0 the physics predicts.
+`rh_dead_time` is not fitted this way; if you want it precise, read the lag between a
+flow step and the RH starting to move in the same log and set it to that.
 
 ## Project Structure
 
@@ -130,11 +245,11 @@ lab-controller/
 │   ├── configs/
 │   │   └── config.json              # Machine-specific configuration
 │   ├── devices/
-│   │   ├── controller.py            # Central orchestrator: device refs, PI loop, experiment runner
+│   │   ├── controller.py            # Central orchestrator: device refs, RH loop, experiment runner
 │   │   ├── vogtlin_mfc.py           # Modbus RTU driver (minimalmodbus, big-endian 32-bit floats)
 │   │   ├── hygrometer.py            # DewMaster serial driver (Magnus formula RH)
 │   │   ├── chiller.py               # Julabo ASCII serial driver
-│   │   └── pid_controller.py        # RH PID with settling guard, deadband, dynamic step cap
+│   │   └── pid_controller.py        # RH feedforward + PI(D) trim with dead-time-aware settling guard
 │   ├── gui/
 │   │   ├── main_window.py           # Main window: left panel controls + right panel plot
 │   │   ├── workers.py               # PollWorker, FlowRampWorker, ExperimentWorker (QThread)
@@ -145,8 +260,8 @@ lab-controller/
 │       ├── data_logger.py           # CSV logger with date sub-folders, 8 KB write buffer
 │       ├── plot_saver.py            # Saves smoothed 3-panel PNG at experiment end
 │       ├── compute_RH.py            # Magnus formula: RH from dew-point and ambient temp
+│       ├── calibrate_feedforward.py # Fits rh_ff_gain/offset from a flow-ramp log (CLI tool)
 │       └── update_settings.py       # Applies runtime settings changes to controller/logger/PID
-├── tests/                           # pytest test suite
 └── data/                            # Log output directory (created automatically)
 ```
 

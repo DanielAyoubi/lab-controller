@@ -14,7 +14,7 @@ from src.devices.controller import Controller
 from src.gui.widgets.plot_widget import RealTimePlotWidget
 from src.gui.workers import ExperimentWorker, PollWorker, FlowRampWorker
 from src.gui.settings_dialog import SettingsDialog
-from src.utility.update_settings import apply_settings
+from src.utility.update_settings import apply_settings, save_config_to_file
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -23,6 +23,7 @@ class MainWindow(QMainWindow):
         self.resize(1200, 800)
 
         # Load Config
+        self.config_path: Optional[str] = None
         self.config = self.load_config()
         
         # Initialize Controller
@@ -55,6 +56,7 @@ class MainWindow(QMainWindow):
         for path in candidates:
             if path and os.path.exists(path):
                 with open(path, "r", encoding="utf-8") as f:
+                    self.config_path = path
                     return json.loads(self._strip_json_comments(f.read()))
         searched = "\n  ".join(p for p in candidates if p)
         raise FileNotFoundError(
@@ -145,15 +147,35 @@ class MainWindow(QMainWindow):
         if not dialog.exec():
             return
 
-        self.config.update(dialog.get_settings())
+        new_settings = dialog.get_settings()
+        self.config.update(new_settings)
         self._apply_settings_to_runtime()
+        saved_to = self._persist_settings(new_settings)
 
         # If ports changed, warn the user to reconnect
+        persist_note = (f"Saved to {saved_to}." if saved_to
+                        else "Could not write config.json — changes apply this session only.")
         QMessageBox.information(self, "Settings Updated",
-                                "Settings have been updated. \n"
-                                "If you changed device ports, please disconnect and reconnect.")
+                                "Settings have been updated.\n"
+                                f"{persist_note}\n"
+                                "If you changed device ports or addresses, please disconnect and reconnect.")
 
         self._refresh_device_dots()
+
+    def _persist_settings(self, new_settings: dict) -> Optional[str]:
+        """Write the changed settings back to config.json, preserving comments.
+
+        When packaged as an executable the writable target is a config.json next
+        to the .exe (the bundled copy is read-only), using the loaded file as the
+        comment/format template. Returns the path written, or None on failure.
+        """
+        try:
+            dest = self._config_search_paths(None)[0]
+            save_config_to_file(new_settings, dest, template_path=self.config_path)
+            return dest
+        except Exception as e:
+            print(f"Failed to save config.json: {e}")
+            return None
 
     def _apply_settings_to_runtime(self):
         """Push the in-memory config into the controller, plot, and poll worker."""
@@ -286,11 +308,13 @@ class MainWindow(QMainWindow):
         
         self.spin_dry = QDoubleSpinBox()
         self.spin_dry.setRange(0, 5.0)
+        self.spin_dry.setDecimals(1)  # MFC flow resolution: 0.1 L/min (e.g. 0.1, 1.5)
         self.spin_dry.setSingleStep(0.1)
         self.spin_dry.setSuffix(" L/min")
-        
+
         self.spin_wet = QDoubleSpinBox()
         self.spin_wet.setRange(0, 5.0)
+        self.spin_wet.setDecimals(1)  # MFC flow resolution: 0.1 L/min (e.g. 0.1, 1.5)
         self.spin_wet.setSingleStep(0.1)
         self.spin_wet.setSuffix(" L/min")
 
@@ -464,8 +488,25 @@ class MainWindow(QMainWindow):
         return exp_group
 
     def _create_right_panel(self):
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+
         self.plot_widget = RealTimePlotWidget()
-        self.main_layout.addWidget(self.plot_widget)
+        right_layout.addWidget(self.plot_widget)
+
+        # Clear Graph button — wipes the plot without affecting devices or logging.
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self.btn_clear_graph = QPushButton("Clear Graph")
+        self.btn_clear_graph.clicked.connect(self.clear_graph)
+        btn_row.addWidget(self.btn_clear_graph)
+        right_layout.addLayout(btn_row)
+
+        self.main_layout.addWidget(right_panel)
+
+    def clear_graph(self):
+        self.plot_widget.clear()
 
     def toggle_connection(self):
         if self.btn_connect.text() == "Connect":
@@ -722,7 +763,25 @@ class MainWindow(QMainWindow):
             else:
                 self.lbl_rh_pid_status.setText("Inactive")
                 self.lbl_rh_pid_status.setStyleSheet("color: gray")
+            self._refresh_live_dots()
             self.update_readings(data)
+        except Exception:
+            pass
+
+    def _refresh_live_dots(self):
+        """Reflect live per-device health (updated each poll) in the status dots,
+        so a device that drops mid-run turns red and goes green again when it
+        recovers."""
+        try:
+            health = self.controller.device_health
+            for key in self.device_labels:
+                if not bool(self.config.get(f"{key}_enabled", True)):
+                    continue  # leave "Disabled" dots alone
+                if getattr(self.controller, key, None) is None:
+                    continue  # not present / failed at connect — keep its dot
+                self._set_device_dot(
+                    key, "Connected" if health.get(key, False) else "Disconnected"
+                )
         except Exception:
             pass
 

@@ -10,9 +10,6 @@ from src.utility.data_logger import DataLogger
 from src.utility.plot_saver import save_experiment_plot
 from src.utility.compute_RH import compute_relative_humidity, calibrated_RH
 
-# Default L/min increment per step when ramping manual flow changes.
-_DEFAULT_FLOW_RAMP_STEP = 0.05
-
 
 class Controller:
     def __init__(self, config: Dict):
@@ -50,6 +47,13 @@ class Controller:
         self.rh_control_total_flow = 2.0
         self.pid = RhPidController(config)
 
+        # Live per-device health, updated every poll. True = last read succeeded.
+        # A device that drops mid-run is flagged False and retried (throttled) so
+        # it recovers automatically when powered back on / re-cabled.
+        self.device_health: Dict[str, bool] = {}
+        self._last_reconnect: Dict[str, float] = {}
+        self.reconnect_interval = float(config.get("reconnect_interval", 5.0))
+
     # ── Connection ───────────────────────────────────────────────────────────
 
     def connect_devices(self) -> Dict[str, bool]:
@@ -59,6 +63,8 @@ class Controller:
         # Start from a clean slate so a device that previously connected (or was
         # since disabled) never lingers as a stale reference across sessions.
         self.dry_mfc = self.wet_mfc = self.hygrometer = self.chiller = None
+        self.device_health = {}
+        self._last_reconnect = {}
 
         if cfg.get("dry_mfc_enabled") and "dry_mfc_port" in cfg:
             dev = VogtlinMFC(
@@ -69,6 +75,7 @@ class Controller:
             )
             results["dry_mfc"] = self._connect_device(dev, "dry MFC")
             self.dry_mfc = dev if results["dry_mfc"] else None
+            self.device_health["dry_mfc"] = results["dry_mfc"]
 
         if cfg.get("wet_mfc_enabled") and "wet_mfc_port" in cfg:
             dev = VogtlinMFC(
@@ -79,6 +86,7 @@ class Controller:
             )
             results["wet_mfc"] = self._connect_device(dev, "wet MFC")
             self.wet_mfc = dev if results["wet_mfc"] else None
+            self.device_health["wet_mfc"] = results["wet_mfc"]
 
         if cfg.get("hygrometer_enabled") and "hygrometer_port" in cfg:
             dev = Hygrometer(
@@ -87,6 +95,7 @@ class Controller:
             )
             results["hygrometer"] = self._connect_device(dev, "hygrometer")
             self.hygrometer = dev if results["hygrometer"] else None
+            self.device_health["hygrometer"] = results["hygrometer"]
 
         if cfg.get("chiller_enabled") and "chiller_port" in cfg:
             dev = JulaboChiller(
@@ -95,6 +104,7 @@ class Controller:
             )
             results["chiller"] = self._connect_device(dev, "chiller")
             self.chiller = dev if results["chiller"] else None
+            self.device_health["chiller"] = results["chiller"]
 
         self.connected = any(results.values()) if results else False
         print(f"Controller connected: {self.connected} (Details: {results})")
@@ -120,41 +130,78 @@ class Controller:
 
     # ── Sensor Reading ───────────────────────────────────────────────────────
 
+    def _should_read(self, key: str, device) -> bool:
+        """Decide whether to read a device this tick.
+
+        A healthy device is always read. A device flagged unhealthy (it dropped
+        out earlier) is left alone except for a reconnect attempt at most once
+        per ``reconnect_interval`` seconds — this is what lets a device recover
+        automatically after being powered back on or re-cabled, without stalling
+        the poll loop on every tick while it stays down.
+        """
+        if self.device_health.get(key, True):
+            return True
+        now = time.time()
+        if now - self._last_reconnect.get(key, 0.0) < self.reconnect_interval:
+            return False
+        self._last_reconnect[key] = now
+        try:
+            if device.connect():
+                self.device_health[key] = True
+                print(f"{key} reconnected.")
+                return True
+        except Exception as e:
+            print(f"{key} reconnect attempt failed: {e}")
+        return False
+
     def read_all_sensors(self) -> Dict:
         data: Dict[str, Optional[float | str]] = {f: None for f in self.log_fields}
         data["timestamp"] = datetime.now().isoformat()
 
-        if self.dry_mfc:
+        if self.dry_mfc and self._should_read("dry_mfc", self.dry_mfc):
             try:
                 data["dry_flow"] = self.dry_mfc.get_flow()
                 data["dry_flow_setpoint"] = self.dry_mfc.get_setpoint()
+                self.device_health["dry_mfc"] = True
             except Exception as e:
                 print(f"Error reading dry MFC: {e}")
+                self.device_health["dry_mfc"] = False
 
-        if self.wet_mfc:
+        if self.wet_mfc and self._should_read("wet_mfc", self.wet_mfc):
             try:
                 data["wet_flow"] = self.wet_mfc.get_flow()
                 data["wet_flow_setpoint"] = self.wet_mfc.get_setpoint()
+                self.device_health["wet_mfc"] = True
             except Exception as e:
                 print(f"Error reading wet MFC: {e}")
+                self.device_health["wet_mfc"] = False
 
-        if self.hygrometer:
+        if self.hygrometer and self._should_read("hygrometer", self.hygrometer):
             try:
                 readings = self.hygrometer.get_readings()
                 if readings:
                     data["hygrometer_temp"] = readings.get("hygrometer_temp")
                     data["dewpoint_temp"] = readings.get("dewpoint_temp")
+                    self.device_health["hygrometer"] = True
+                else:
+                    # Port open but no reading — device powered off / unplugged.
+                    self.device_health["hygrometer"] = False
             except Exception as e:
                 print(f"Error reading hygrometer: {e}")
+                self.device_health["hygrometer"] = False
 
-        if self.chiller:
+        if self.chiller and self._should_read("chiller", self.chiller):
             try:
                 data["chiller_temp"] = self.chiller.get_external_temperature()
                 data["chiller_setpoint"] = self.chiller.get_setpoint_temperature()
+                # Setpoint is always available on a live chiller (external probe
+                # temp may legitimately be None), so use it as the liveness signal.
+                self.device_health["chiller"] = data["chiller_setpoint"] is not None
             except Exception as e:
                 print(f"Error reading chiller: {e}")
+                self.device_health["chiller"] = False
 
-        if self.hygrometer and data["dewpoint_temp"] is not None:
+        if data["dewpoint_temp"] is not None:
             dp = data["dewpoint_temp"]
             if data["hygrometer_temp"] is not None:
                 data["rh_hygrometer"] = compute_relative_humidity(dp=dp, t=data["hygrometer_temp"])
@@ -230,7 +277,7 @@ class Controller:
         )
 
         max_delta = max(abs(dry_diff), abs(wet_diff))
-        step_size = self.config.get("flow_ramp_step", _DEFAULT_FLOW_RAMP_STEP)  # L/min
+        step_size = self.config.get("flow_ramp_step", 0.05)  # L/min
         if max_delta <= step_size:
             return
 
@@ -304,27 +351,12 @@ class Controller:
 
     @staticmethod
     def _report(msg: str, on_progress: Optional[Callable[[str], None]] = None):
-        """Print a status message and forward it to the optional progress callback."""
         print(msg)
         if on_progress:
             try:
                 on_progress(msg)
             except Exception:
                 pass
-
-    def _precondition_pid_config(self) -> Dict:
-        """Config clone with an inflated max-step for faster pre-conditioning.
-
-        The chamber reaches the ramp's starting RH faster than during the
-        measured ramp by boosting the PI max-step to
-        clamp(rh_max_step * MULTIPLIER, FLOOR, CEILING).
-        """
-        MULTIPLIER, FLOOR, CEILING = 4, 0.2, 0.5
-        boosted = min(
-            CEILING,
-            max(self.config.get("rh_max_step", 0.05) * MULTIPLIER, FLOOR),
-        )
-        return {**self.config, "rh_max_step": boosted}
 
     def _hold_and_log(
         self,
@@ -529,7 +561,7 @@ class Controller:
                     f"\n── Pre-conditioning (flow mode): dry-only flush "
                     f"(timeout {stability_timeout:.0f}s) ──"
                 )
-                precondpid = RhPidController(self._precondition_pid_config())
+                precondpid = RhPidController(self.config)
                 self._stabilize_to_rh(
                     target_rh=0.0,
                     pid=precondpid,
@@ -566,7 +598,7 @@ class Controller:
         dry_only_precond = going_up and precond_target == 0.0
 
         deadband = self.pid.params["deadband"]
-        precondpid = RhPidController(self._precondition_pid_config())
+        precondpid = RhPidController(self.config)
 
         if dry_only_precond:
             self.set_flow_rates(

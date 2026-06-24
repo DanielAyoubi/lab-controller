@@ -3,6 +3,10 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
+def _clamp(x: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, x))
+
+
 @dataclass
 class PidState:
     integral: float = 0.0
@@ -12,22 +16,41 @@ class PidState:
     prev_rh: float = 0.0
     filtered_d: float = 0.0
     dynamic_settling_time: float = 180.0
+    prev_target: Optional[float] = None  # None until the first compute() call
 
 
 class RhPidController:
-    """RH PI(D) controller with settling guard, deadband, and dynamic step clamping.
+    """RH controller: static feedforward operating point + PI(D) trim.
 
-    Three guards are applied in order each time compute() is called:
-      1. Settling guard  — waits after each flow change for the system to equilibrate.
-      2. Deadband        — ignores errors < ±rh_deadband% (avoids chasing sensor noise).
-      3. Dynamic step cap — wet-ratio change scales with |error|/100 so the controller
-                           takes large strides far from setpoint and feathers in as it
-                           converges.
+    The wet/dry mixing plant has an (approximately) known static inverse: with a
+    saturating bubble bath on the wet line, steady-state RH ≈ 100 · wet_ratio.
+    So instead of crawling the ratio up from its current value with rate-limited
+    feedback (which is what made the old loop slow to settle from a cold start),
+    we jump straight to the model estimate and let feedback trim only the small
+    residual:
 
-    The D term acts on the measurement (not the error) to prevent derivative spikes when
-    the setpoint changes between experiment steps.  A first-order low-pass filter
-    (time constant derivative_filter_tau) attenuates high-frequency mirror noise.
-    Set Kd = 0 to disable the D term.
+        wet_ratio = ff_gain · (target/100) + ff_offset      ← feedforward (instant)
+                  + Kp·error + Ki·∫error + D-on-measurement  ← PI(D) trim
+
+    The integral term holds the *calibration bias* (bubbler under-saturation,
+    temperature/probe offset). That bias is ~constant across targets, so it is
+    preserved across setpoint changes — only the feedforward jumps. This is what
+    makes the loop fast: one model-based jump lands within a few % RH, then the
+    PI trim closes the rest in a correction or two.
+
+    Guards retained from the original design:
+      1. Settling guard  — waits ≥ the transport dead time after each flow change
+                           so every correction is evaluated *after* its effect has
+                           propagated through the tubing (avoids dead-time-driven
+                           over-correction and oscillation).
+      2. Deadband        — ignores errors < ±rh_deadband% (avoids chasing noise);
+                           the integral is held, not decayed, so the learned bias
+                           survives.
+      3. Trim clamp      — bounds the feedback contribution so a noisy reading can
+                           never fling the ratio far from the feedforward estimate.
+
+    The D term acts on the measurement (not the error) so it does not spike when
+    the setpoint changes between experiment steps. Set Kd = 0 to disable it.
     """
 
     def __init__(self, config: dict):
@@ -54,11 +77,11 @@ class RhPidController:
         curr_wet_sp: float,
         total_flow: float,
     ) -> Optional[float]:
-        """Run one PID step given current MFC setpoints.
+        """Run one control step given current MFC setpoints.
 
-        Returns the new wet flow ratio (0–1), or None if no adjustment is needed yet.
-        On a non-None return, state.dynamic_settling_time is updated; the caller should
-        record the adjustment time::
+        Returns the new wet flow ratio (0–1), or None if no adjustment is needed
+        yet. On a non-None return, state.dynamic_settling_time is updated; the
+        caller should record the adjustment time::
 
             new_ratio = pid.compute(target, measured, dry_sp, wet_sp, total_flow)
             if new_ratio is not None:
@@ -69,7 +92,13 @@ class RhPidController:
         s = self.state
         p = self._params
 
-        # --- D on measurement: update every call (even during settling) -------
+        # ── Feedforward operating point ───────────────────────────────────────
+        # The wet ratio the static plant model says will yield target_rh.
+        ratio_ff = _clamp(
+            p["ff_gain"] * (target_rh / 100.0) + p["ff_offset"], 0.0, 1.0
+        )
+
+        # ── D on measurement: update every call (even during settling) ─────────
         kd = p["Kd"]
         dt_meas = now - s.last_meas_time
         if kd > 0.0 and dt_meas > 0.5:
@@ -80,7 +109,25 @@ class RhPidController:
         s.prev_rh = current_rh
         s.last_meas_time = now
 
-        # --- Settling guard ---------------------------------------------------
+        # ── Setpoint change → jump to the feedforward operating point ─────────
+        # Command pure feedforward plus the carried calibration bias (Ki·∫). We
+        # deliberately exclude the P and D terms here: the hygrometer still reads
+        # the *pre-jump* RH (it is behind the dead time), so a P term would see
+        # the full error and double-count the move the feedforward just made,
+        # overshooting badly. Trim is deferred until the jump has settled and the
+        # measurement reflects it.
+        setpoint_changed = (
+            s.prev_target is None or abs(target_rh - s.prev_target) > 1e-6
+        )
+        if setpoint_changed:
+            s.prev_target = target_rh
+            new_wet_ratio = _clamp(ratio_ff + p["Ki"] * s.integral, 0.0, 1.0)
+            s.last_time = now
+            s.last_adjustment_time = now
+            self._arm_settling(curr_dry_sp, curr_wet_sp, new_wet_ratio, total_flow)
+            return new_wet_ratio
+
+        # ── Settling guard (≥ transport dead time) ────────────────────────────
         remaining = s.dynamic_settling_time - (now - s.last_adjustment_time)
         if remaining > 0:
             s.last_time = now
@@ -92,53 +139,55 @@ class RhPidController:
 
         error = target_rh - current_rh
 
-        # --- Deadband ---------------------------------------------------------
+        # ── Deadband ──────────────────────────────────────────────────────────
+        # Hold (do not decay) the integral: it encodes the calibration bias.
         if abs(error) < p["deadband"]:
             s.last_time = now
-            s.integral *= 0.98  # slow decay — preserves operating-point memory
             return None
 
-        # --- PID terms --------------------------------------------------------
-        p_term = p["Kp"] * error
-
+        # ── PI(D) trim around the feedforward operating point ─────────────────
+        # The measurement has now settled, so error is the *residual* the
+        # feedforward could not account for — exactly what P, I and D should act on.
         ki = p["Ki"]
         s.integral += error * dt
-        limit = p["integral_limit"] / ki if ki > 0 else 0.0
-        s.integral = max(-limit, min(limit, s.integral))
+        if ki > 0.0:
+            ilim = p["integral_limit"] / ki  # so |Ki·integral| ≤ integral_limit
+            s.integral = _clamp(s.integral, -ilim, ilim)
         i_term = ki * s.integral
 
-        # Negative sign: when measurement rises toward setpoint d_filtered > 0,
+        p_term = p["Kp"] * error
+        # Negative sign: as the measurement rises toward setpoint filtered_d > 0,
         # so d_term < 0 — damps the approach and reduces overshoot.
         d_term = -kd * s.filtered_d if kd > 0.0 else 0.0
 
-        output_change = p_term + i_term + d_term
+        trim = _clamp(p_term + i_term + d_term, -p["trim_limit"], p["trim_limit"])
 
-        # --- Dynamic step clamp -----------------------------------------------
-        dynamic_max_step = p["max_step"] * (abs(error) / 100.0)
-        output_change = max(-dynamic_max_step, min(dynamic_max_step, output_change))
-
+        new_wet_ratio = _clamp(ratio_ff + trim, 0.0, 1.0)
         s.last_time = now
+        self._arm_settling(curr_dry_sp, curr_wet_sp, new_wet_ratio, total_flow)
 
-        if abs(output_change) <= 0.0001:
-            return None
+        return new_wet_ratio
 
-        # --- New wet ratio -----------------------------------------------------
-        total_sp = curr_dry_sp + curr_wet_sp
-        if total_sp <= 0.01:
-            new_wet_ratio = max(0.0, min(1.0, target_rh / 100.0))
-        else:
-            new_wet_ratio = max(0.0, min(1.0, curr_wet_sp / total_sp + output_change))
+    def _arm_settling(
+        self, curr_dry_sp: float, curr_wet_sp: float,
+        new_wet_ratio: float, total_flow: float,
+    ):
+        """Set the dynamic settling time from the size of the commanded move.
 
-        # --- Dynamic settling time --------------------------------------------
+        Big repositioning moves wait longer (up to settling_time); but never less
+        than the transport dead time, so a correction is always judged after its
+        effect has propagated to the hygrometer.
+        """
+        p = self._params
         new_dry_sp = (1.0 - new_wet_ratio) * total_flow
         new_wet_sp = new_wet_ratio * total_flow
         delta = abs(new_dry_sp - curr_dry_sp) + abs(new_wet_sp - curr_wet_sp)
         ref = max(0.01, p["max_flow"])
-        t_min = p["settling_time_min"]
-        t_max = p["settling_time"]
-        s.dynamic_settling_time = t_min + (t_max - t_min) * min(1.0, delta / ref)
-
-        return new_wet_ratio
+        t_min = max(p["settling_time_min"], p["dead_time"])
+        t_max = max(p["settling_time"], t_min)
+        self.state.dynamic_settling_time = (
+            t_min + (t_max - t_min) * min(1.0, delta / ref)
+        )
 
     def get_status(self, rh_setpoint: float, current_rh: Optional[float]) -> str:
         """Return a human-readable status string for display in the GUI."""
@@ -165,8 +214,8 @@ class RhPidController:
     @staticmethod
     def _build_params(config: dict) -> dict:
         return {
-            "Kp": config.get("rh_kp", 0.02),
-            "Ki": config.get("rh_ki", 0.001),
+            "Kp": config.get("rh_kp", 0.01),
+            "Ki": config.get("rh_ki", 0.002),
             "Kd": config.get("rh_kd", 0.0),
             "derivative_filter_tau": config.get("rh_derivative_filter_tau", 30.0),
             "integral_limit": config.get("rh_integral_limit", 0.5),
@@ -174,5 +223,9 @@ class RhPidController:
             "settling_time_min": config.get("rh_settling_time_min", 5.0),
             "max_flow": config.get("max_flow", 2.0),
             "deadband": config.get("rh_deadband", 1.0),
-            "max_step": config.get("rh_max_step", 0.05),
+            # ── Feedforward + dead-time params (new) ──
+            "ff_gain": config.get("rh_ff_gain", 1.0),
+            "ff_offset": config.get("rh_ff_offset", 0.0),
+            "dead_time": config.get("rh_dead_time", 25.0),
+            "trim_limit": config.get("rh_trim_limit", 0.6),
         }

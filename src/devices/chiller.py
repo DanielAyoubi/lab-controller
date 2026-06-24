@@ -14,6 +14,14 @@ class JulaboChiller:
         return self
 
     def connect(self):
+        # Close any stale handle first so reconnecting after a dropout re-opens
+        # the port cleanly.
+        if self.ser is not None:
+            try:
+                self.ser.close()
+            except Exception:
+                pass
+            self.ser = None
         try:
             self.ser = serial.Serial(
                 port=self.port,

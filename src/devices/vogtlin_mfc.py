@@ -31,6 +31,14 @@ class VogtlinMFC:
         self.disconnect()
 
     def connect(self) -> bool:
+        # Close any stale handle first so reconnecting after a dropout re-opens
+        # the port cleanly instead of failing on an already-open handle.
+        if self.instrument is not None:
+            try:
+                self.instrument.serial.close()
+            except Exception:
+                pass
+            self.instrument = None
         try:
             self.instrument = minimalmodbus.Instrument(
                 self.port, self.address, mode=minimalmodbus.MODE_RTU
