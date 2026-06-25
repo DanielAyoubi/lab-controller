@@ -117,6 +117,12 @@ class RealTimePlotWidget(QWidget):
         self.p2.setXLink(self.p1)
         self.p3.setXLink(self.p1)
 
+        # Show raw values on the y-axes. pyqtgraph defaults to auto SI-prefix
+        # scaling, which for small flow values (0–2 L/min) tacks a multiplier /
+        # unit prefix onto the axis instead of printing the actual numbers.
+        for plot in (self.p1, self.p2, self.p3):
+            plot.getAxis("left").enableAutoSIPrefix(False)
+
         # Plot 1: Flow rates
         self._style_plot(self.p1, "Mass Flow Controllers", "Flow (L/min)")
         self._solid_line(self.p1, "dry_actual", "b", "Dry Actual")

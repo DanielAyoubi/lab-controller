@@ -277,12 +277,16 @@ class Controller:
         )
 
         max_delta = max(abs(dry_diff), abs(wet_diff))
-        step_size = self.config.get("flow_ramp_step", 0.05)  # L/min
+        step_size = self.config.get("flow_ramp_step", 0.25)  # L/min (coarse)
+        step_delay = self.config.get("flow_ramp_delay", 0.3)  # s between steps
         if max_delta <= step_size:
             return
 
-        steps = min(int(max_delta / step_size), 100)
-        print(f"Ramping flows over {steps} steps...")
+        # Coarse, fast ramp: a few big steps with a short settle between each,
+        # just enough to avoid a hard setpoint jump. Capped so even a large
+        # change finishes in a couple of seconds.
+        steps = min(max(1, round(max_delta / step_size)), 20)
+        print(f"Ramping flows over {steps} steps ({step_delay:.2f}s/step)...")
         for i in range(1, steps + 1):
             frac = i / steps
             try:
@@ -292,7 +296,7 @@ class Controller:
                     self.wet_mfc.set_flow(current_wet + wet_diff * frac)
             except Exception as e:
                 print(f"Error during flow ramp step {i}: {e}")
-            time.sleep(1)
+            time.sleep(step_delay)
 
     # ── RH Control (PID) ──────────────────────────────────────────────────────
 

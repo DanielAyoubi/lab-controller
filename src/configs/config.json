@@ -4,16 +4,16 @@
   "max_plot_points": 500,
 
   "dry_mfc_port": "COM6",
-  "wet_mfc_port": "COM7",
-  "hygrometer_port": "COM9",
-  "chiller_port": "COM8",
+  "wet_mfc_port": "COM4",
+  "hygrometer_port": "COM7",
+  "chiller_port": "COM15",
 
   "mfc_baudrate": 9600,
   "hygrometer_baudrate": 19200,
   "chiller_baudrate": 9600,
 
-  "dry_mfc_address": 1,
-  "wet_mfc_address": 247,
+  "dry_mfc_address": 247,
+  "wet_mfc_address": 1,
 
   "dry_mfc_enabled": true,
   "wet_mfc_enabled": true,
@@ -23,7 +23,8 @@
   "experiment_hold_time": 180.0,
   "max_flow": 1.0,
   "control_interval": 2000,
-  "flow_ramp_step": 0.05,
+  "flow_ramp_step": 0.25,
+  "flow_ramp_delay": 0.3,
 
   "experiment_rh_lower": 0.0,
   "experiment_rh_upper": 90.0,
