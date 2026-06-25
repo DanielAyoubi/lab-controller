@@ -203,6 +203,21 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+    def _set_controls_enabled(self, enabled: bool):
+        """Enable/disable the device-control buttons together."""
+        for btn in (self.btn_set_flow, self.btn_set_chiller,
+                    self.btn_start_exp, self.btn_toggle_rh_control):
+            btn.setEnabled(enabled)
+
+    def _reset_rh_control_ui(self):
+        """Return the RH-control widgets to their inactive/stopped state."""
+        self.btn_toggle_rh_control.setText("Start RH Control")
+        self.btn_toggle_rh_control.setStyleSheet("")
+        self.lbl_rh_pid_status.setText("Inactive")
+        self.lbl_rh_pid_status.setStyleSheet("color: gray")
+        self.spin_rh_target.setEnabled(True)
+        self.spin_rh_total_flow.setEnabled(True)
+
     def _set_device_dot(self, key: str, status: str):
         dot = self.device_labels.get(key)
         if dot is None:
@@ -532,17 +547,11 @@ class MainWindow(QMainWindow):
                 if any_connected and not any_failed:
                     self.btn_connect.setText("Disconnect")
                     self.btn_connect.setStyleSheet("background-color: #ccffcc;")
-                    self.btn_set_flow.setEnabled(True)
-                    self.btn_set_chiller.setEnabled(True)
-                    self.btn_start_exp.setEnabled(True)
-                    self.btn_toggle_rh_control.setEnabled(True)
+                    self._set_controls_enabled(True)
                 elif any_connected:
                     self.btn_connect.setText("Disconnect")
                     self.btn_connect.setStyleSheet("background-color: #ffe0aa;")
-                    self.btn_set_flow.setEnabled(True)
-                    self.btn_set_chiller.setEnabled(True)
-                    self.btn_start_exp.setEnabled(True)
-                    self.btn_toggle_rh_control.setEnabled(True)
+                    self._set_controls_enabled(True)
                 # else: all failed — button stays "Connect", no style change
 
                 if any_connected and self.chk_save_csv.isChecked():
@@ -561,20 +570,12 @@ class MainWindow(QMainWindow):
             # control with a stale setpoint after the next Connect.
             if self.controller.rh_control_active:
                 self.controller.set_rh_control_active(False)
-            self.btn_toggle_rh_control.setText("Start RH Control")
-            self.btn_toggle_rh_control.setStyleSheet("")
-            self.lbl_rh_pid_status.setText("Inactive")
-            self.lbl_rh_pid_status.setStyleSheet("color: gray")
-            self.spin_rh_target.setEnabled(True)
-            self.spin_rh_total_flow.setEnabled(True)
+            self._reset_rh_control_ui()
             self.controller.logger.close()
             self.controller.disconnect_devices()
             self.btn_connect.setText("Connect")
             self.btn_connect.setStyleSheet("")
-            self.btn_set_flow.setEnabled(False)
-            self.btn_set_chiller.setEnabled(False)
-            self.btn_start_exp.setEnabled(False)
-            self.btn_toggle_rh_control.setEnabled(False)
+            self._set_controls_enabled(False)
             for key in self.device_labels:
                 status = "Disabled" if not self.config.get(f"{key}_enabled", True) else "Disconnected"
                 self._set_device_dot(key, status)
@@ -635,15 +636,10 @@ class MainWindow(QMainWindow):
         if self.controller.rh_control_active:
             # Stop
             self.controller.set_rh_control_active(False)
-            self.btn_toggle_rh_control.setText("Start RH Control")
-            self.btn_toggle_rh_control.setStyleSheet("")
-            self.lbl_rh_pid_status.setText("Inactive")
-            self.lbl_rh_pid_status.setStyleSheet("color: gray")
-            
+            self._reset_rh_control_ui()
+
             # Re-enable inputs
             self.btn_set_flow.setEnabled(True)
-            self.spin_rh_target.setEnabled(True)
-            self.spin_rh_total_flow.setEnabled(True)
             self.btn_start_exp.setEnabled(True)
         else:
             # Start

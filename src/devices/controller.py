@@ -66,45 +66,31 @@ class Controller:
         self.device_health = {}
         self._last_reconnect = {}
 
-        if cfg.get("dry_mfc_enabled") and "dry_mfc_port" in cfg:
-            dev = VogtlinMFC(
-                port=cfg["dry_mfc_port"],
-                address=cfg.get("dry_mfc_address", 1),
-                baudrate=cfg.get("mfc_baudrate", 9600),
-                name="Dry Air MFC",
-            )
-            results["dry_mfc"] = self._connect_device(dev, "dry MFC")
-            self.dry_mfc = dev if results["dry_mfc"] else None
-            self.device_health["dry_mfc"] = results["dry_mfc"]
-
-        if cfg.get("wet_mfc_enabled") and "wet_mfc_port" in cfg:
-            dev = VogtlinMFC(
-                port=cfg["wet_mfc_port"],
-                address=cfg.get("wet_mfc_address", 247),
-                baudrate=cfg.get("mfc_baudrate", 9600),
-                name="Wet Air MFC",
-            )
-            results["wet_mfc"] = self._connect_device(dev, "wet MFC")
-            self.wet_mfc = dev if results["wet_mfc"] else None
-            self.device_health["wet_mfc"] = results["wet_mfc"]
-
-        if cfg.get("hygrometer_enabled") and "hygrometer_port" in cfg:
-            dev = Hygrometer(
+        # (attr key, log label, port config key, factory). Only the device class
+        # and its constructor args vary between devices; everything else (the
+        # enabled+port gate, connect, store, health) is identical, so drive it
+        # from one loop.
+        specs = [
+            ("dry_mfc", "dry MFC", "dry_mfc_port", lambda: VogtlinMFC(
+                port=cfg["dry_mfc_port"], address=cfg.get("dry_mfc_address", 1),
+                baudrate=cfg.get("mfc_baudrate", 9600), name="Dry Air MFC")),
+            ("wet_mfc", "wet MFC", "wet_mfc_port", lambda: VogtlinMFC(
+                port=cfg["wet_mfc_port"], address=cfg.get("wet_mfc_address", 247),
+                baudrate=cfg.get("mfc_baudrate", 9600), name="Wet Air MFC")),
+            ("hygrometer", "hygrometer", "hygrometer_port", lambda: Hygrometer(
                 port=cfg["hygrometer_port"],
-                baudrate=cfg.get("hygrometer_baudrate", 19200),
-            )
-            results["hygrometer"] = self._connect_device(dev, "hygrometer")
-            self.hygrometer = dev if results["hygrometer"] else None
-            self.device_health["hygrometer"] = results["hygrometer"]
-
-        if cfg.get("chiller_enabled") and "chiller_port" in cfg:
-            dev = JulaboChiller(
+                baudrate=cfg.get("hygrometer_baudrate", 19200))),
+            ("chiller", "chiller", "chiller_port", lambda: JulaboChiller(
                 port=cfg["chiller_port"],
-                baudrate=cfg.get("chiller_baudrate", 9600),
-            )
-            results["chiller"] = self._connect_device(dev, "chiller")
-            self.chiller = dev if results["chiller"] else None
-            self.device_health["chiller"] = results["chiller"]
+                baudrate=cfg.get("chiller_baudrate", 9600))),
+        ]
+        for key, label, port_key, make in specs:
+            if cfg.get(f"{key}_enabled") and port_key in cfg:
+                dev = make()
+                ok = self._connect_device(dev, label)
+                results[key] = ok
+                setattr(self, key, dev if ok else None)
+                self.device_health[key] = ok
 
         self.connected = any(results.values()) if results else False
         print(f"Controller connected: {self.connected} (Details: {results})")

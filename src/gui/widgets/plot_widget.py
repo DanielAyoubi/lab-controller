@@ -17,24 +17,23 @@ _COLORS = {
 }
 
 
+# Names of the per-series data deques. Keeping the list in one place means
+# __init__, set_max_points and clear can't drift out of sync.
+_SERIES = (
+    "timestamps", "dry_flow", "wet_flow", "dry_setpoint", "wet_setpoint",
+    "hygrometer_temp", "dewpoint_temp", "chiller_temp", "chiller_setpoint",
+    "rh_hygrometer", "rh_chiller", "rh_chiller_calibrated",
+)
+
+
 class RealTimePlotWidget(QWidget):
     def __init__(self, max_points: int = 500):
         super().__init__()
         self.max_points = max_points
 
         # Data storage
-        self.timestamps = deque(maxlen=max_points)
-        self.dry_flow = deque(maxlen=max_points)
-        self.wet_flow = deque(maxlen=max_points)
-        self.dry_setpoint = deque(maxlen=max_points)
-        self.wet_setpoint = deque(maxlen=max_points)
-        self.hygrometer_temp = deque(maxlen=max_points)
-        self.dewpoint_temp = deque(maxlen=max_points)
-        self.chiller_temp = deque(maxlen=max_points)
-        self.chiller_setpoint = deque(maxlen=max_points)
-        self.rh_hygrometer = deque(maxlen=max_points)
-        self.rh_chiller = deque(maxlen=max_points)
-        self.rh_chiller_calibrated = deque(maxlen=max_points)
+        for name in _SERIES:
+            setattr(self, name, deque(maxlen=max_points))
 
         # Layout
         pg.setConfigOptions(antialias=True, background="w", foreground="k")
@@ -50,29 +49,13 @@ class RealTimePlotWidget(QWidget):
     def set_max_points(self, max_points: int):
         self.max_points = max_points
         # Re-create deques with new maxlen, preserving existing data
-        self.timestamps = deque(self.timestamps, maxlen=max_points)
-        self.dry_flow = deque(self.dry_flow, maxlen=max_points)
-        self.wet_flow = deque(self.wet_flow, maxlen=max_points)
-        self.dry_setpoint = deque(self.dry_setpoint, maxlen=max_points)
-        self.wet_setpoint = deque(self.wet_setpoint, maxlen=max_points)
-        self.hygrometer_temp = deque(self.hygrometer_temp, maxlen=max_points)
-        self.dewpoint_temp = deque(self.dewpoint_temp, maxlen=max_points)
-        self.chiller_temp = deque(self.chiller_temp, maxlen=max_points)
-        self.chiller_setpoint = deque(self.chiller_setpoint, maxlen=max_points)
-        self.rh_hygrometer = deque(self.rh_hygrometer, maxlen=max_points)
-        self.rh_chiller = deque(self.rh_chiller, maxlen=max_points)
-        self.rh_chiller_calibrated = deque(self.rh_chiller_calibrated, maxlen=max_points)
+        for name in _SERIES:
+            setattr(self, name, deque(getattr(self, name), maxlen=max_points))
 
     def clear(self):
         """Drop all buffered data and blank every line on the plot."""
-        for d in (
-            self.timestamps, self.dry_flow, self.wet_flow,
-            self.dry_setpoint, self.wet_setpoint,
-            self.hygrometer_temp, self.dewpoint_temp,
-            self.chiller_temp, self.chiller_setpoint,
-            self.rh_hygrometer, self.rh_chiller, self.rh_chiller_calibrated,
-        ):
-            d.clear()
+        for name in _SERIES:
+            getattr(self, name).clear()
         for line in self._lines.values():
             line.setData([], [])
 

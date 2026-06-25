@@ -1,5 +1,6 @@
 import serial
 import time
+from typing import Optional
 
 class JulaboChiller:
     def __init__(self, port, baudrate=9600, timeout=1):
@@ -120,29 +121,22 @@ class JulaboChiller:
         self.send_command("status")
         return self.read_response()
 
-    def get_internal_temperature(self):
-        self.send_command("in_pv_00")
+    def _query_float(self, command: str) -> Optional[float]:
+        self.send_command(command)
         resp = self.read_response()
         try:
             return float(resp) if resp else None
-        except ValueError:
+        except (ValueError, TypeError):
             return None
+
+    def get_internal_temperature(self):
+        return self._query_float("in_pv_00")
 
     def get_external_temperature(self):
-        self.send_command("in_pv_02")
-        resp = self.read_response()
-        try:
-            return float(resp) if resp else None
-        except ValueError:
-            return None
+        return self._query_float("in_pv_02")
 
     def get_setpoint_temperature(self):
-        self.send_command("in_sp_00")
-        resp = self.read_response()
-        try:
-            return float(resp) if resp else None
-        except ValueError:
-            return None
+        return self._query_float("in_sp_00")
 
     def set_setpoint_temperature(self, temperature):
         # Ensure format matches "OUT_SP_00_55.5" structure
