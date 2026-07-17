@@ -72,6 +72,10 @@ class SettingsDialog(QDialog):
         self.chiller_enabled = QCheckBox("Chiller enabled")
         self.chiller_enabled.setChecked(bool(self.config.get("chiller_enabled", True)))
         layout.addRow(self.chiller_enabled)
+
+        self.firesting_enabled = QCheckBox("FireSting O2 enabled")
+        self.firesting_enabled.setChecked(bool(self.config.get("firesting_enabled", True)))
+        layout.addRow(self.firesting_enabled)
         
         self.dry_mfc_port = QLineEdit(self.config.get("dry_mfc_port", "COM6"))
         layout.addRow("Dry MFC Port:", self.dry_mfc_port)
@@ -96,6 +100,9 @@ class SettingsDialog(QDialog):
         self.chiller_port = QLineEdit(self.config.get("chiller_port", "COM8"))
         layout.addRow("Chiller Port:", self.chiller_port)
 
+        self.firesting_port = QLineEdit(self.config.get("firesting_port", "COM17"))
+        layout.addRow("FireSting O2 Port:", self.firesting_port)
+
         self.mfc_baudrate = QSpinBox()
         self.mfc_baudrate.setRange(1200, 115200)
         self.mfc_baudrate.setValue(self.config.get("mfc_baudrate", 9600))
@@ -110,6 +117,11 @@ class SettingsDialog(QDialog):
         self.chiller_baudrate.setRange(1200, 115200)
         self.chiller_baudrate.setValue(self.config.get("chiller_baudrate", 9600))
         layout.addRow("Chiller Baudrate:", self.chiller_baudrate)
+
+        self.firesting_baudrate = QSpinBox()
+        self.firesting_baudrate.setRange(1200, 115200)
+        self.firesting_baudrate.setValue(self.config.get("firesting_baudrate", 19200))
+        layout.addRow("FireSting O2 Baudrate:", self.firesting_baudrate)
 
         self.tabs.addTab(tab, "Devices")
 
@@ -281,15 +293,18 @@ class SettingsDialog(QDialog):
             "wet_mfc_enabled": bool(self.wet_mfc_enabled.isChecked()),
             "hygrometer_enabled": bool(self.hygrometer_enabled.isChecked()),
             "chiller_enabled": bool(self.chiller_enabled.isChecked()),
+            "firesting_enabled": bool(self.firesting_enabled.isChecked()),
             "dry_mfc_port": self.dry_mfc_port.text(),
             "wet_mfc_port": self.wet_mfc_port.text(),
             "dry_mfc_address": self.dry_mfc_address.value(),
             "wet_mfc_address": self.wet_mfc_address.value(),
             "hygrometer_port": self.hygrometer_port.text(),
             "chiller_port": self.chiller_port.text(),
+            "firesting_port": self.firesting_port.text(),
             "mfc_baudrate": self.mfc_baudrate.value(),
             "hygrometer_baudrate": self.hygrometer_baudrate.value(),
             "chiller_baudrate": self.chiller_baudrate.value(),
+            "firesting_baudrate": self.firesting_baudrate.value(),
             "experiment_flow_start": self.experiment_flow_start.value(),
             "experiment_flow_end": self.experiment_flow_end.value(),
             "experiment_flow_step": self.experiment_flow_step.value(),

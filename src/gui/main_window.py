@@ -275,6 +275,7 @@ class MainWindow(QMainWindow):
             ("wet_mfc",    "Wet MFC"),
             ("hygrometer", "Hygro"),
             ("chiller",    "Chiller"),
+            ("firesting",  "O₂"),
         ]
         for idx, (key, short_name) in enumerate(_devices):
             dot = QLabel("●")
@@ -344,10 +345,16 @@ class MainWindow(QMainWindow):
         self.btn_set_flow.clicked.connect(self.set_manual_flow)
         self.btn_set_flow.setEnabled(False)
 
+        # Flows are no longer plotted (they stay near-constant), so show the
+        # live measured values (and setpoints) here instead. Updated each poll.
+        self.lbl_flow_readout = QLabel("Dry — · Wet — L/min")
+        self.lbl_flow_readout.setStyleSheet("font-size: 11px; color: #444444;")
+
         manual_layout.addRow("Dry Flow:", self.spin_dry)
         manual_layout.addRow("Wet Flow:", self.spin_wet)
         manual_layout.addRow(self.chk_ramp_flow)
         manual_layout.addRow(self.btn_set_flow)
+        manual_layout.addRow("Measured:", self.lbl_flow_readout)
         manual_group.setLayout(manual_layout)
         return manual_group
 
@@ -794,7 +801,15 @@ class MainWindow(QMainWindow):
             
             # Update Plot
             self.plot_widget.update_plot(data)
-            
+
+            def _fmt(v):
+                return f"{v:.2f}" if v is not None else "—"
+
+            self.lbl_flow_readout.setText(
+                f"Dry {_fmt(data.get('dry_flow'))} (set {_fmt(data.get('dry_flow_setpoint'))}) · "
+                f"Wet {_fmt(data.get('wet_flow'))} (set {_fmt(data.get('wet_flow_setpoint'))}) L/min"
+            )
+
         except Exception:
             # Don't spam errors
             pass

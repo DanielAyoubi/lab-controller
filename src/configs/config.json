@@ -7,10 +7,12 @@
   "wet_mfc_port": "COM4",
   "hygrometer_port": "COM7",
   "chiller_port": "COM15",
+  "firesting_port": "COM17",
 
   "mfc_baudrate": 9600,
   "hygrometer_baudrate": 19200,
   "chiller_baudrate": 9600,
+  "firesting_baudrate": 19200,
 
   "dry_mfc_address": 247,
   "wet_mfc_address": 1,
@@ -19,9 +21,10 @@
   "wet_mfc_enabled": true,
   "hygrometer_enabled": true,
   "chiller_enabled": true,
+  "firesting_enabled": true,
 
   "experiment_hold_time": 180.0,
-  "max_flow": 1.0,
+  "max_flow": 2.0,
   "control_interval": 2000,
   "flow_ramp_step": 0.25,
   "flow_ramp_delay": 0.3,
@@ -31,9 +34,9 @@
   "experiment_stability_readings": 5,
   "experiment_stability_timeout": 800.0,
   "experiment_mode": "flow",
-  "experiment_flow_start": 0.0,
-  "experiment_flow_end": 2.0,
-  "experiment_flow_step": 0.1,
+  "experiment_flow_start": 2.0,
+  "experiment_flow_end": 0.0,
+  "experiment_flow_step": 0.02,
   "experiment_rh_step": 5.0,
 
   "rh_ff_gain": 1.0,

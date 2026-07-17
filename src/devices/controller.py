@@ -3,6 +3,7 @@ from datetime import datetime
 from typing import Callable, Dict, Optional
 
 from src.devices.chiller import JulaboChiller
+from src.devices.firesting import FireStingO2
 from src.devices.hygrometer import Hygrometer
 from src.devices.pid_controller import RhPidController
 from src.devices.vogtlin_mfc import VogtlinMFC
@@ -21,6 +22,7 @@ class Controller:
         self.wet_mfc: Optional[VogtlinMFC] = None
         self.hygrometer: Optional[Hygrometer] = None
         self.chiller: Optional[JulaboChiller] = None
+        self.firesting: Optional[FireStingO2] = None
 
         self.logger = DataLogger(
             output_dir=self.config.get("log_dir", "data"),
@@ -40,6 +42,7 @@ class Controller:
             "rh_chiller_calibrated",
             "chiller_temp",
             "chiller_setpoint",
+            "oxygen",
         ]
 
         self.rh_control_active = False
@@ -63,6 +66,7 @@ class Controller:
         # Start from a clean slate so a device that previously connected (or was
         # since disabled) never lingers as a stale reference across sessions.
         self.dry_mfc = self.wet_mfc = self.hygrometer = self.chiller = None
+        self.firesting = None
         self.device_health = {}
         self._last_reconnect = {}
 
@@ -83,6 +87,9 @@ class Controller:
             ("chiller", "chiller", "chiller_port", lambda: JulaboChiller(
                 port=cfg["chiller_port"],
                 baudrate=cfg.get("chiller_baudrate", 9600))),
+            ("firesting", "FireSting O2", "firesting_port", lambda: FireStingO2(
+                port=cfg["firesting_port"],
+                baudrate=cfg.get("firesting_baudrate", 19200))),
         ]
         for key, label, port_key, make in specs:
             if cfg.get(f"{key}_enabled") and port_key in cfg:
@@ -98,7 +105,7 @@ class Controller:
 
     def disconnect_devices(self):
         print("Disconnecting devices...")
-        for device in [self.dry_mfc, self.wet_mfc, self.hygrometer, self.chiller]:
+        for device in [self.dry_mfc, self.wet_mfc, self.hygrometer, self.chiller, self.firesting]:
             if device:
                 device.disconnect()
         self.running = False
@@ -186,6 +193,19 @@ class Controller:
             except Exception as e:
                 print(f"Error reading chiller: {e}")
                 self.device_health["chiller"] = False
+
+        if self.firesting and self._should_read("firesting", self.firesting):
+            try:
+                readings = self.firesting.get_readings()
+                if readings:
+                    data["oxygen"] = readings.get("oxygen")
+                    self.device_health["firesting"] = True
+                else:
+                    # Port open but no reading — device powered off / unplugged.
+                    self.device_health["firesting"] = False
+            except Exception as e:
+                print(f"Error reading FireSting O2: {e}")
+                self.device_health["firesting"] = False
 
         if data["dewpoint_temp"] is not None:
             dp = data["dewpoint_temp"]

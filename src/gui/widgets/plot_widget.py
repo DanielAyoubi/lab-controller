@@ -19,10 +19,12 @@ _COLORS = {
 
 # Names of the per-series data deques. Keeping the list in one place means
 # __init__, set_max_points and clear can't drift out of sync.
+# Flows are not plotted (they stay near-constant; shown as a live readout in
+# the main window and always logged to CSV), and the hygrometer-temperature
+# based series are omitted from the display for the same reason.
 _SERIES = (
-    "timestamps", "dry_flow", "wet_flow", "dry_setpoint", "wet_setpoint",
-    "hygrometer_temp", "dewpoint_temp", "chiller_temp", "chiller_setpoint",
-    "rh_hygrometer", "rh_chiller", "rh_chiller_calibrated",
+    "timestamps", "dewpoint_temp", "chiller_temp", "chiller_setpoint",
+    "rh_chiller", "rh_chiller_calibrated", "oxygen",
 )
 
 
@@ -90,41 +92,32 @@ class RealTimePlotWidget(QWidget):
     def _setup_plots(self):
         axis1 = pg.DateAxisItem(orientation="bottom")
         axis2 = pg.DateAxisItem(orientation="bottom")
-        axis3 = pg.DateAxisItem(orientation="bottom")
 
         self.p1 = self.glw.addPlot(row=0, col=0, axisItems={"bottom": axis1})
         self.p2 = self.glw.addPlot(row=1, col=0, axisItems={"bottom": axis2})
-        self.p3 = self.glw.addPlot(row=2, col=0, axisItems={"bottom": axis3})
 
         # Shared x-axis (replaces Matplotlib sharex=True)
         self.p2.setXLink(self.p1)
-        self.p3.setXLink(self.p1)
 
         # Show raw values on the y-axes. pyqtgraph defaults to auto SI-prefix
-        # scaling, which for small flow values (0–2 L/min) tacks a multiplier /
-        # unit prefix onto the axis instead of printing the actual numbers.
-        for plot in (self.p1, self.p2, self.p3):
+        # scaling, which for small values tacks a multiplier / unit prefix onto
+        # the axis instead of printing the actual numbers.
+        for plot in (self.p1, self.p2):
             plot.getAxis("left").enableAutoSIPrefix(False)
 
-        # Plot 1: Flow rates
-        self._style_plot(self.p1, "Mass Flow Controllers", "Flow (L/min)")
-        self._solid_line(self.p1, "dry_actual", "b", "Dry Actual")
-        self._dashed_line(self.p1, "dry_set", "b", "Dry Set")
-        self._solid_line(self.p1, "wet_actual", "r", "Wet Actual")
-        self._dashed_line(self.p1, "wet_set", "r", "Wet Set")
+        # Plot 1: Temperature. The RH panel below is derived from these
+        # (dewpoint + chiller temp), so the colours match across panels:
+        # chiller temp (blue) feeds RH (Chiller Temp) (blue).
+        self._style_plot(self.p1, "Temperature", "Temp (°C)")
+        self._solid_line(self.p1, "dewpoint", "c", "Dewpoint")
+        self._solid_line(self.p1, "chiller", "b", "Chiller")
+        self._dashed_line(self.p1, "chiller_set", "b", "Chiller Set")
 
-        # Plot 2: Temperature
-        self._style_plot(self.p2, "Temperature", "Temp (°C)")
-        self._solid_line(self.p2, "hygrometer", "g", "Hygrometer")
-        self._solid_line(self.p2, "dewpoint", "c", "Dewpoint")
-        self._solid_line(self.p2, "chiller", "b", "Chiller")
-        self._dashed_line(self.p2, "chiller_set", "b", "Chiller Set")
-
-        # Plot 3: Humidity
-        self._style_plot(self.p3, "Relative Humidity", "RH (%)", x_label="Time")
-        self._solid_line(self.p3, "rh_hygrometer", "g", "RH (Hygrometer Temp)")
-        self._solid_line(self.p3, "rh_chiller", "b", "RH (Chiller Temp)")
-        self._solid_line(self.p3, "rh_chiller_calibrated", "r", "RH (Chiller Temp, Calibrated)")
+        # Plot 2: Humidity + Oxygen (both in %)
+        self._style_plot(self.p2, "RH & O₂", "%", x_label="Time")
+        self._solid_line(self.p2, "rh_chiller", "b", "RH (Chiller Temp)")
+        self._solid_line(self.p2, "rh_chiller_calibrated", "r", "RH (Chiller Temp, Calibrated)")
+        self._solid_line(self.p2, "oxygen", "g", "O₂ (FireSting)")
 
     def update_plot(self, data: Dict[str, Optional[float]]):
         # Parse timestamp
@@ -142,17 +135,12 @@ class RealTimePlotWidget(QWidget):
             return v if v is not None else np.nan
 
         self.timestamps.append(timestamp)
-        self.dry_flow.append(_coerce(data.get("dry_flow")))
-        self.wet_flow.append(_coerce(data.get("wet_flow")))
-        self.dry_setpoint.append(_coerce(data.get("dry_flow_setpoint")))
-        self.wet_setpoint.append(_coerce(data.get("wet_flow_setpoint")))
-        self.hygrometer_temp.append(_coerce(data.get("hygrometer_temp")))
         self.dewpoint_temp.append(_coerce(data.get("dewpoint_temp")))
         self.chiller_temp.append(_coerce(data.get("chiller_temp")))
         self.chiller_setpoint.append(_coerce(data.get("chiller_setpoint")))
-        self.rh_hygrometer.append(_coerce(data.get("rh_hygrometer")))
         self.rh_chiller.append(_coerce(data.get("rh_chiller")))
         self.rh_chiller_calibrated.append(_coerce(data.get("rh_chiller_calibrated")))
+        self.oxygen.append(_coerce(data.get("oxygen")))
 
         self._redraw()
 
@@ -163,38 +151,19 @@ class RealTimePlotWidget(QWidget):
         # DateAxisItem expects POSIX seconds on the x-axis.
         time_data = np.array([t.timestamp() for t in self.timestamps], dtype=np.float64)
 
-        # Convert all deques to numpy arrays once
-        dry_flow_data = np.array(list(self.dry_flow), dtype=np.float64)
-        dry_setpoint_data = np.array(list(self.dry_setpoint), dtype=np.float64)
-        wet_flow_data = np.array(list(self.wet_flow), dtype=np.float64)
-        wet_setpoint_data = np.array(list(self.wet_setpoint), dtype=np.float64)
-        hygrometer_temp_data = np.array(list(self.hygrometer_temp), dtype=np.float64)
-        dewpoint_temp_data = np.array(list(self.dewpoint_temp), dtype=np.float64)
-        chiller_temp_data = np.array(list(self.chiller_temp), dtype=np.float64)
-        chiller_setpoint_data = np.array(list(self.chiller_setpoint), dtype=np.float64)
-        rh_hygrometer_data = np.array(list(self.rh_hygrometer), dtype=np.float64)
-        rh_chiller_data = np.array(list(self.rh_chiller), dtype=np.float64)
-        rh_chiller_calibrated_data = np.array(list(self.rh_chiller_calibrated), dtype=np.float64)
-
         # Helper to update line with valid data only (to ensure lines connect)
-        def update_line_filtered(line, y_data):
-            # Filter valid data
+        def update_line_filtered(line, series):
+            y_data = np.array(list(series), dtype=np.float64)
             mask = ~np.isnan(y_data)
             if np.any(mask):
                 line.setData(time_data[mask], y_data[mask])
             else:
                 line.setData([], [])
 
-        update_line_filtered(self._lines["dry_actual"], dry_flow_data)
-        update_line_filtered(self._lines["dry_set"], dry_setpoint_data)
-        update_line_filtered(self._lines["wet_actual"], wet_flow_data)
-        update_line_filtered(self._lines["wet_set"], wet_setpoint_data)
+        update_line_filtered(self._lines["dewpoint"], self.dewpoint_temp)
+        update_line_filtered(self._lines["chiller"], self.chiller_temp)
+        update_line_filtered(self._lines["chiller_set"], self.chiller_setpoint)
 
-        update_line_filtered(self._lines["hygrometer"], hygrometer_temp_data)
-        update_line_filtered(self._lines["dewpoint"], dewpoint_temp_data)
-        update_line_filtered(self._lines["chiller"], chiller_temp_data)
-        update_line_filtered(self._lines["chiller_set"], chiller_setpoint_data)
-
-        update_line_filtered(self._lines["rh_hygrometer"], rh_hygrometer_data)
-        update_line_filtered(self._lines["rh_chiller"], rh_chiller_data)
-        update_line_filtered(self._lines["rh_chiller_calibrated"], rh_chiller_calibrated_data)
+        update_line_filtered(self._lines["rh_chiller"], self.rh_chiller)
+        update_line_filtered(self._lines["rh_chiller_calibrated"], self.rh_chiller_calibrated)
+        update_line_filtered(self._lines["oxygen"], self.oxygen)
