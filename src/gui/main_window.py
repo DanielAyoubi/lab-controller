@@ -16,6 +16,10 @@ from src.gui.workers import ExperimentWorker, PollWorker, FlowRampWorker
 from src.gui.settings_dialog import SettingsDialog
 from src.utility.update_settings import apply_settings, save_config_to_file
 
+# Compact styling for the purge toggle (sits inline with the ramp checkbox).
+_PURGE_STYLE_OFF = "font-size: 11px; padding: 2px 6px;"
+_PURGE_STYLE_ON = _PURGE_STYLE_OFF + " background-color: #cc7a00; color: white;"
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -205,7 +209,7 @@ class MainWindow(QMainWindow):
 
     def _set_controls_enabled(self, enabled: bool):
         """Enable/disable the device-control buttons together."""
-        for btn in (self.btn_set_flow, self.btn_set_chiller,
+        for btn in (self.btn_set_flow, self.btn_purge, self.btn_set_chiller,
                     self.btn_start_exp, self.btn_toggle_rh_control):
             btn.setEnabled(enabled)
 
@@ -345,6 +349,25 @@ class MainWindow(QMainWindow):
         self.btn_set_flow.clicked.connect(self.set_manual_flow)
         self.btn_set_flow.setEnabled(False)
 
+        # Purge: one-touch toggle that overrides flows with 3 L/min wet, 0 dry.
+        self.btn_purge = QPushButton("Purge")
+        self.btn_purge.setCheckable(True)
+        self.btn_purge.setEnabled(False)
+        self.btn_purge.setMaximumWidth(70)
+        self.btn_purge.setStyleSheet(_PURGE_STYLE_OFF)
+        self.btn_purge.setToolTip(
+            "On: force 3 L/min wet, 0 L/min dry.\n"
+            "Off: restore the dry/wet setpoints above."
+        )
+        self.btn_purge.toggled.connect(self.toggle_purge)
+
+        # Ramp checkbox and the compact purge toggle share one row.
+        ramp_row = QHBoxLayout()
+        ramp_row.setContentsMargins(0, 0, 0, 0)
+        ramp_row.addWidget(self.chk_ramp_flow)
+        ramp_row.addStretch()
+        ramp_row.addWidget(self.btn_purge)
+
         # Flows are no longer plotted (they stay near-constant), so show the
         # live measured values (and setpoints) here instead. Updated each poll.
         self.lbl_flow_readout = QLabel("Dry — · Wet — L/min")
@@ -352,7 +375,7 @@ class MainWindow(QMainWindow):
 
         manual_layout.addRow("Dry Flow:", self.spin_dry)
         manual_layout.addRow("Wet Flow:", self.spin_wet)
-        manual_layout.addRow(self.chk_ramp_flow)
+        manual_layout.addRow(ramp_row)
         manual_layout.addRow(self.btn_set_flow)
         manual_layout.addRow("Measured:", self.lbl_flow_readout)
         manual_group.setLayout(manual_layout)
@@ -588,8 +611,22 @@ class MainWindow(QMainWindow):
                 self._set_device_dot(key, status)
 
     def set_manual_flow(self):
-        dry = self.spin_dry.value()
-        wet = self.spin_wet.value()
+        self._apply_flow(self.spin_dry.value(), self.spin_wet.value())
+
+    def toggle_purge(self, checked: bool):
+        """Purge on: force 3 L/min wet, 0 dry. Off: restore the spinbox flows."""
+        self.btn_purge.setText("Purging" if checked else "Purge")
+        self.btn_purge.setStyleSheet(_PURGE_STYLE_ON if checked else _PURGE_STYLE_OFF)
+        # Disable manual flow entry while purging so it can't fight the override.
+        self.spin_dry.setEnabled(not checked)
+        self.spin_wet.setEnabled(not checked)
+        self.btn_set_flow.setEnabled(not checked)
+        if checked:
+            self._apply_flow(0.0, 3.0)
+        else:
+            self._apply_flow(self.spin_dry.value(), self.spin_wet.value())
+
+    def _apply_flow(self, dry: float, wet: float):
         self._stop_poll_worker()  # avoid concurrent serial access
         if self.chk_ramp_flow.isChecked():
             # Gradual stepwise ramp via background worker
@@ -616,7 +653,8 @@ class MainWindow(QMainWindow):
         self.flow_ramp_worker = None
         if worker is not None:
             worker.wait()
-        self.btn_set_flow.setEnabled(True)
+        # Stay disabled while purge is active so it can't override the purge flows.
+        self.btn_set_flow.setEnabled(not self.btn_purge.isChecked())
         if self.controller.is_connected():
             self._start_poll_worker()
 
