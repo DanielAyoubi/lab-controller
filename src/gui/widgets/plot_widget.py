@@ -144,6 +144,7 @@ class RealTimePlotWidget(QWidget):
         # Build the stacked panels, top to bottom, sharing one time x-axis.
         panels = {}
         first = None
+        self._x_panel = None  # the panel all others x-link to; drives the time window
         for row, num in enumerate(sorted(_PANELS)):
             cfg = _PANELS[num]
             axis = pg.DateAxisItem(orientation="bottom")
@@ -158,6 +159,7 @@ class RealTimePlotWidget(QWidget):
 
             if first is None:
                 first = panel
+                self._x_panel = panel
             else:
                 panel.setXLink(first)
 
@@ -219,3 +221,16 @@ class RealTimePlotWidget(QWidget):
 
         for s in _SERIES_SPEC:
             update_line_filtered(self._lines[s.key], self._data[s.field])
+
+        # Frame the time window explicitly. Auto-range on each panel only sees
+        # that panel's own left-axis items, so when a panel's left-axis series
+        # have no data (e.g. hygrometer/chiller offline) its X stays at the
+        # default [0,1] and the right-axis data (flows / O₂, in a linked
+        # ViewBox) is drawn far off-screen. Setting X from the actual timestamps
+        # keeps the window over the data whichever axis is carrying it.
+        if self._x_panel is not None:
+            t_min = float(time_data[0])
+            t_max = float(time_data[-1])
+            if t_max <= t_min:
+                t_max = t_min + 1.0  # single point: give the axis a finite width
+            self._x_panel.setXRange(t_min, t_max, padding=0.02)
