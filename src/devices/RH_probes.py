@@ -1,8 +1,12 @@
 import serial
 import time
 import re
+import struct
+import inspect
 
-class Hygrometer:
+from pymodbus.client import ModbusSerialClient
+
+class EdgeTechHygrometer:
     def __init__(self, port: str, baudrate: int, timeout: float = 2.0, name: str = "Hygrometer",
                  read_timeout: float = 5.0, nudge_interval: float = 1.0):
         self.port = port
@@ -133,3 +137,47 @@ class Hygrometer:
             time.sleep(0.05)
 
         return None
+
+
+
+
+class VaisalaRHProbe:
+    def __init__(self, port: str, slave_addr: int = 240):
+        self.client = ModbusSerialClient(
+            port=port, timeout=1, baudrate=19200, bytesize=8, stopbits=2, parity="N"
+        )
+        self.slave_addr = slave_addr
+        if not self.client.connect():
+            raise IOError(f"Failed to connect to {port}")
+
+
+    def regs_to_float(self, registers: list[int], hi_idx: int) -> float:
+        """HMP110 stores 32-bit floats as two 16-bit regs, little-endian word order."""
+        raw = registers[hi_idx].to_bytes(2, "big") + registers[hi_idx - 1].to_bytes(2, "big")
+        return struct.unpack("!f", raw)[0]
+
+
+    def read_holding_registers_compat(self, client, address, count, slave):
+        """Call read_holding_registers regardless of pymodbus's kwarg naming
+        for the slave/unit id, which has changed across versions (unit -> slave
+        -> device_id)."""
+        sig = inspect.signature(client.read_holding_registers)
+        params = sig.parameters
+        kwargs = {"address": address, "count": count}
+        for name in ("slave", "unit", "device_id"):
+            if name in params:
+                kwargs[name] = slave
+                break
+        return client.read_holding_registers(**kwargs)
+
+
+    def read_measurements(self, client: ModbusSerialClient):
+        rr = self.read_holding_registers_compat(client, 0, 10, self.slave_addr)
+        if rr.isError():
+            raise IOError(rr)
+        regs = rr.registers
+        rh = self.regs_to_float(regs, 1)   # relative humidity [%RH]
+        t = self.regs_to_float(regs, 3)    # temperature [°C]
+        dp = self.regs_to_float(regs, 9)   # dew point [°C]
+        return rh, t, dp
+

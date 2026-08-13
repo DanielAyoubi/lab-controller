@@ -8,11 +8,13 @@
   "hygrometer_port": "COM7",
   "chiller_port": "COM15",
   "firesting_port": "COM17",
+  "vaisala_RH_port": "COM21",
 
   "mfc_baudrate": 9600,
   "hygrometer_baudrate": 19200,
   "chiller_baudrate": 9600,
   "firesting_baudrate": 19200,
+  "vaisala_RH_baudrate": 19200,
 
   "dry_mfc_address": 247,
   "wet_mfc_address": 1,
@@ -22,6 +24,7 @@
   "hygrometer_enabled": true,
   "chiller_enabled": true,
   "firesting_enabled": true,
+  "vaisala_RH_enabled": true,
 
   "experiment_hold_time": 180.0,
   "max_flow": 2.0,

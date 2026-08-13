@@ -2,11 +2,11 @@ import time
 from datetime import datetime
 from typing import Callable, Dict, Optional
 
-from src.devices.chiller import JulaboChiller
-from src.devices.firesting import FireStingO2
-from src.devices.hygrometer import Hygrometer
+from src.devices.chillers import JulaboChiller
+from src.devices.O2_monitors import FireStingO2
+from src.devices.RH_probes import EdgeTechHygrometer
 from src.devices.pid_controller import RhPidController
-from src.devices.vogtlin_mfc import VogtlinMFC
+from src.devices.mass_flow_controllers import VogtlinMFC
 from src.utility.data_logger import DataLogger
 from src.utility.plot_saver import save_experiment_plot
 from src.utility.compute_RH import compute_relative_humidity, calibrated_RH
@@ -20,7 +20,7 @@ class Controller:
 
         self.dry_mfc: Optional[VogtlinMFC] = None
         self.wet_mfc: Optional[VogtlinMFC] = None
-        self.hygrometer: Optional[Hygrometer] = None
+        self.hygrometer: Optional[EdgeTechHygrometer] = None
         self.chiller: Optional[JulaboChiller] = None
         self.firesting: Optional[FireStingO2] = None
 
@@ -81,7 +81,7 @@ class Controller:
             ("wet_mfc", "wet MFC", "wet_mfc_port", lambda: VogtlinMFC(
                 port=cfg["wet_mfc_port"], address=cfg.get("wet_mfc_address", 247),
                 baudrate=cfg.get("mfc_baudrate", 9600), name="Wet Air MFC")),
-            ("hygrometer", "hygrometer", "hygrometer_port", lambda: Hygrometer(
+            ("hygrometer", "hygrometer", "hygrometer_port", lambda: EdgeTechHygrometer(
                 port=cfg["hygrometer_port"],
                 baudrate=cfg.get("hygrometer_baudrate", 19200))),
             ("chiller", "chiller", "chiller_port", lambda: JulaboChiller(
