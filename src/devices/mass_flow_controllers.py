@@ -115,6 +115,14 @@ class VogtlinMFC:
             print(f"Error setting flow on {self.name}: {e}")
             return False
 
+    def read(self) -> dict:
+        """One poll, keyed by the channel keys declared in the registry.
+
+        Modbus errors propagate — the controller flags the device unhealthy and
+        retries the connection on its own throttle.
+        """
+        return {"flow": self.get_flow(), "setpoint": self.get_setpoint()}
+
     def get_status(self) -> dict:
         return {
             "flow": self.get_flow(),

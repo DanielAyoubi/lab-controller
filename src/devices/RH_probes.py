@@ -90,7 +90,7 @@ class EdgeTechHygrometer:
         except Exception as e:
             print(f"Reconnect failed for {self.name}: {e}")
 
-    def get_readings(self):
+    def read(self):
         if not self.ser or not self.ser.is_open:
             return None
         try:
@@ -99,6 +99,9 @@ class EdgeTechHygrometer:
             print(f"Serial error on {self.name}, reconnecting: {e}")
             self._reconnect()
             return None
+
+    # Kept for notebooks/scripts that predate the uniform Device interface.
+    get_readings = read
 
     def _query(self):
         """Send one poll and read until a valid reading or timeout.
@@ -121,11 +124,9 @@ class EdgeTechHygrometer:
                 buffer += self.ser.read(self.ser.in_waiting)
                 decoded = buffer.decode(errors="ignore")
                 if m := self.data_pattern.search(decoded):
-                    dewpoint = float(m.group("dp"))
-                    ambient = float(m.group("at"))
                     return {
-                        "dewpoint_temp": dewpoint,
-                        "hygrometer_temp": ambient,
+                        "dewpoint": float(m.group("dp")),
+                        "temp": float(m.group("at")),
                     }
 
             # Nudge if stalled - no buffer reset needed
@@ -142,14 +143,79 @@ class EdgeTechHygrometer:
 
 
 class VaisalaRHProbe:
-    def __init__(self, port: str, slave_addr: int = 240):
-        self.client = ModbusSerialClient(
-            port=port, timeout=1, baudrate=19200, bytesize=8, stopbits=2, parity="N"
-        )
-        self.slave_addr = slave_addr
-        if not self.client.connect():
-            raise IOError(f"Failed to connect to {port}")
+    """Vaisala HMP110 RH/T probe over Modbus RTU.
 
+    Reports RH directly (no dew-point conversion needed), plus temperature and
+    the probe's own dew-point calculation.
+    """
+
+    def __init__(self, port: str, slave_addr: int = 240, baudrate: int = 19200,
+                 timeout: float = 1.0, name: str = "Vaisala RH"):
+        self.port = port
+        self.slave_addr = slave_addr
+        self.baudrate = baudrate
+        self.timeout = timeout
+        self.name = name
+        self.client = None
+        self.connected = False
+
+    def __enter__(self):
+        self.connect()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.disconnect()
+
+    def connect(self) -> bool:
+        # Close any stale client first so reconnecting after a dropout re-opens
+        # the port cleanly instead of failing on an already-open handle.
+        self.disconnect()
+        self.client = ModbusSerialClient(
+            port=self.port, timeout=self.timeout, baudrate=self.baudrate,
+            bytesize=8, stopbits=2, parity="N",
+        )
+        if not self.client.connect():
+            print(f"Error opening {self.name} port {self.port}")
+            self.client = None
+            self.connected = False
+            return False
+
+        # Opening the port only proves the USB adapter is present. Probe with a
+        # real register read so a powered-off probe reports as failed.
+        try:
+            self.read_measurements()
+        except Exception as e:
+            print(f"{self.name} on {self.port} (addr={self.slave_addr}): port "
+                  f"opened but device did not respond (powered off?): {e}")
+            self.disconnect()
+            return False
+
+        print(f"Connected to {self.name} at {self.port} (addr={self.slave_addr})")
+        self.connected = True
+        return True
+
+    def disconnect(self):
+        if self.client is not None:
+            try:
+                self.client.close()
+            except Exception:
+                pass
+            self.client = None
+        self.connected = False
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+    def read(self):
+        """One poll, keyed by the channel keys declared in the registry."""
+        if self.client is None:
+            return None
+        try:
+            rh, t, dp = self.read_measurements()
+        except Exception as e:
+            print(f"Error reading {self.name}: {e}")
+            return None
+        return {"rh": rh, "temp": t, "dewpoint": dp}
 
     def regs_to_float(self, registers: list[int], hi_idx: int) -> float:
         """HMP110 stores 32-bit floats as two 16-bit regs, little-endian word order."""
@@ -171,8 +237,8 @@ class VaisalaRHProbe:
         return client.read_holding_registers(**kwargs)
 
 
-    def read_measurements(self, client: ModbusSerialClient):
-        rr = self.read_holding_registers_compat(client, 0, 10, self.slave_addr)
+    def read_measurements(self):
+        rr = self.read_holding_registers_compat(self.client, 0, 10, self.slave_addr)
         if rr.isError():
             raise IOError(rr)
         regs = rr.registers

@@ -24,8 +24,18 @@ class DataLogger:
         daily_dir.mkdir(parents=True, exist_ok=True)
         timestamp = now.strftime("%Y%m%d_%H%M%S")
         p = prefix if prefix is not None else self.filename_prefix
-        filename = f"{p}_{timestamp}.csv"
-        return str(daily_dir / filename)
+
+        # The timestamp only resolves to the second, so two logs started in the
+        # same second would land on the same path and the first would be
+        # silently overwritten (start_new_log opens with "w"). That is reachable
+        # whenever a log is rotated promptly — e.g. after a device rename
+        # changes the column set.
+        candidate = daily_dir / f"{p}_{timestamp}.csv"
+        n = 2
+        while candidate.exists():
+            candidate = daily_dir / f"{p}_{timestamp}_{n}.csv"
+            n += 1
+        return str(candidate)
 
     def start_new_log(self, fieldnames: List[str], prefix: Optional[str] = None):
         # Close existing file handle if open
@@ -36,7 +46,12 @@ class DataLogger:
 
         # Open file handle and keep it open for efficient writing
         self._file_handle = open(self.current_file, "w", newline="", buffering=8192)
-        self._csv_writer = csv.DictWriter(self._file_handle, fieldnames=self.fieldnames)
+        # extrasaction="ignore": the field list is derived from the configured
+        # device set, so a reading arriving from a device that was removed
+        # mid-session is dropped rather than raising in the poll loop.
+        self._csv_writer = csv.DictWriter(
+            self._file_handle, fieldnames=self.fieldnames, extrasaction="ignore"
+        )
         self._csv_writer.writeheader()
         self._file_handle.flush()  # Ensure header is written immediately
 

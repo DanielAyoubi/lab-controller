@@ -10,15 +10,25 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
+from src.devices import registry as reg
 from src.devices.controller import Controller
 from src.gui.widgets.plot_widget import RealTimePlotWidget
 from src.gui.workers import ExperimentWorker, PollWorker, FlowRampWorker
 from src.gui.settings_dialog import SettingsDialog
+from src.utility import config_migration
 from src.utility.update_settings import apply_settings, save_config_to_file
 
 # Compact styling for the purge toggle (sits inline with the ramp checkbox).
 _PURGE_STYLE_OFF = "font-size: 11px; padding: 2px 6px;"
 _PURGE_STYLE_ON = _PURGE_STYLE_OFF + " background-color: #cc7a00; color: white;"
+
+# The left panel is a fixed-width column. Device tags are free text, so any
+# widget that shows one must elide rather than widen — otherwise a tag like
+# "Vaisala before flow cell" drags the whole panel past the viewport and the
+# content gets clipped.
+_LEFT_PANEL_WIDTH = 360
+_DOT_TAG_WIDTH = 130    # tag beside a status dot (two per row)
+_ROW_TAG_WIDTH = 120    # tag used as a form-row label
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -61,7 +71,19 @@ class MainWindow(QMainWindow):
             if path and os.path.exists(path):
                 with open(path, "r", encoding="utf-8") as f:
                     self.config_path = path
-                    return json.loads(self._strip_json_comments(f.read()))
+                    config = json.loads(self._strip_json_comments(f.read()))
+                # Pre-modular configs describe five fixed devices through flat
+                # keys; convert them to the `devices` list and write it back so
+                # the existing rig keeps working with no manual re-entry.
+                if config_migration.needs_migration(config):
+                    devices = config_migration.migrate(config)
+                    print(f"Migrated {len(devices)} device(s) to the new "
+                          f"'devices' config format.")
+                    self._persist_settings({"devices": devices})
+                else:
+                    # A hand-edited file may leave an implied role unassigned.
+                    reg.assign_default_roles(config.get("devices", []))
+                return config
         searched = "\n  ".join(p for p in candidates if p)
         raise FileNotFoundError(
             "Config file not found. Looked in:\n  "
@@ -152,8 +174,13 @@ class MainWindow(QMainWindow):
             return
 
         new_settings = dialog.get_settings()
+        previous_fields = list(self.controller.log_fields)
         self.config.update(new_settings)
         self._apply_settings_to_runtime()
+        self._rotate_log_if_schema_changed(previous_fields)
+        # The device list may have changed: rebuild the device-driven left panel
+        # and the plot's series before anything tries to touch the old widgets.
+        self._rebuild_left_panel()
         saved_to = self._persist_settings(new_settings)
 
         # If ports changed, warn the user to reconnect
@@ -165,6 +192,25 @@ class MainWindow(QMainWindow):
                                 "If you changed device ports or addresses, please disconnect and reconnect.")
 
         self._refresh_device_dots()
+
+    def _rotate_log_if_schema_changed(self, previous_fields: list):
+        """Start a fresh CSV when the column set changed under an open log.
+
+        Column names come from the device tags, so adding a device or renaming
+        one changes the schema. The open file's header is already written, and
+        the writer ignores unknown keys — without a rotation the new columns
+        would be silently dropped for the rest of the session.
+        """
+        if not self.controller.logger.is_logging():
+            return
+        if self.controller.log_fields == previous_fields:
+            return
+        try:
+            self.controller.logger.close()
+            self.controller.logger.start_new_log(self.controller.log_fields)
+            print("Device list changed — started a new log file for the new columns.")
+        except Exception as e:
+            print(f"Failed to rotate log after a device change: {e}")
 
     def _persist_settings(self, new_settings: dict) -> Optional[str]:
         """Write the changed settings back to config.json, preserving comments.
@@ -186,35 +232,52 @@ class MainWindow(QMainWindow):
         if self.controller:
             apply_settings(self.controller.config, self.config,
                            self.controller.logger, self.controller.pid)
+            self.controller.refresh_devices()
 
         if hasattr(self, 'plot_widget'):
             self.plot_widget.set_max_points(self.config.get('max_plot_points', 500))
+            # Reconfiguring drops the buffered traces, so only do it when the
+            # series actually changed — not for an unrelated settings edit.
+            manifest = self.controller.build_series_manifest()
+            if manifest != self.plot_widget.manifest:
+                self.plot_widget.configure(manifest)
 
         # Poll interval change takes effect on the next sleep cycle
         if self.poll_worker:
             self.poll_worker.interval_ms = int(self.config.get('control_interval', 5000))
 
+    def _spec_by_id(self, dev_id: str) -> dict:
+        for spec in self.config.get("devices", []) or []:
+            if spec.get("id") == dev_id:
+                return spec
+        return {}
+
     def _refresh_device_dots(self):
         """Update device dot indicators to reflect enabled/disabled + connection state."""
         try:
-            for key in self.device_labels:
-                if not bool(self.config.get(f"{key}_enabled", True)):
-                    self._set_device_dot(key, "Disabled")
-                elif getattr(self.controller, key, None) and self.controller.is_connected():
-                    self._set_device_dot(key, "Connected")
+            for dev_id in self.device_labels:
+                if not bool(self._spec_by_id(dev_id).get("enabled", True)):
+                    self._set_device_dot(dev_id, "Disabled")
+                elif dev_id in self.controller.devices and self.controller.is_connected():
+                    self._set_device_dot(dev_id, "Connected")
                 else:
-                    self._set_device_dot(key, "Disconnected")
+                    self._set_device_dot(dev_id, "Disconnected")
         except Exception:
             pass
 
     def _set_controls_enabled(self, enabled: bool):
-        """Enable/disable the device-control buttons together."""
-        for btn in (self.btn_set_flow, self.btn_purge, self.btn_set_chiller,
-                    self.btn_start_exp, self.btn_toggle_rh_control):
+        """Enable/disable the device-control buttons together.
+
+        The button set depends on which devices are configured, so it is
+        collected while the panel is built rather than named here.
+        """
+        for btn in getattr(self, "_control_buttons", []):
             btn.setEnabled(enabled)
 
     def _reset_rh_control_ui(self):
         """Return the RH-control widgets to their inactive/stopped state."""
+        if self.btn_toggle_rh_control is None:
+            return
         self.btn_toggle_rh_control.setText("Start RH Control")
         self.btn_toggle_rh_control.setStyleSheet("")
         self.lbl_rh_pid_status.setText("Inactive")
@@ -236,30 +299,103 @@ class MainWindow(QMainWindow):
         dot.setStyleSheet(f"color: {color_map.get(status, '#888888')}; font-size: 14px;")
         dot.setToolTip(status)
 
+    # ── Left panel ───────────────────────────────────────────────────────────
+    #
+    # The panel is generated from the configured device list rather than being
+    # a fixed set of groups: one status dot and one control row per device, and
+    # the role-driven groups (RH control, experiment) appear only when the roles
+    # they need are assigned. `_rebuild_left_panel` replaces the whole widget
+    # tree, so no per-device widget reference can outlive its device.
+
+    @staticmethod
+    def _elided_label(text: str, max_width: int, style: str = "",
+                      tooltip: Optional[str] = None) -> QLabel:
+        """Label that truncates instead of stretching the fixed-width panel.
+
+        The full text is always available as a tooltip, so nothing is lost.
+        """
+        lbl = QLabel()
+        if style:
+            lbl.setStyleSheet(style)
+        elided = lbl.fontMetrics().elidedText(
+            text, Qt.TextElideMode.ElideRight, max_width
+        )
+        lbl.setText(elided)
+        lbl.setMaximumWidth(max_width)
+        if tooltip or elided != text:
+            lbl.setToolTip(tooltip or text)
+        return lbl
+
+    @staticmethod
+    def _compact_form() -> QFormLayout:
+        """Form layout that wraps a long row rather than forcing the panel wider."""
+        form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        return form
+
+    def _enabled_specs(self) -> list:
+        return reg.enabled_specs(self.config.get("devices", []))
+
+    def _specs_with_cap(self, cap: str) -> list:
+        return [s for s in self._enabled_specs() if cap in reg.get_type(s).caps]
+
     def _create_left_panel(self):
+        self.left_scroll = QScrollArea()
+        self.left_scroll.setWidgetResizable(True)
+        self.left_scroll.setFixedWidth(_LEFT_PANEL_WIDTH)
+        self.left_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.main_layout.addWidget(self.left_scroll)
+        self._rebuild_left_panel()
+
+    def _rebuild_left_panel(self):
+        """(Re)build the panel for the current device set.
+
+        Handing a fresh widget to the scroll area lets Qt delete the previous
+        tree, so stale per-device widgets can never be referenced afterwards.
+        """
+        was_connected = self.btn_connect.text() == "Disconnect" if hasattr(
+            self, "btn_connect") else False
+        save_csv = self.chk_save_csv.isChecked() if hasattr(self, "chk_save_csv") else True
+
         panel = QWidget()
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(4, 4, 4, 4)
 
+        self._control_buttons = []
+        self.flow_spins = {}
+        self.chiller_spins = {}
+
         layout.addWidget(self._build_device_status_group())
-        layout.addWidget(self._build_manual_flow_group())
+        flow_group = self._build_manual_flow_group()
+        if flow_group:
+            layout.addWidget(flow_group)
         layout.addWidget(self._build_rh_control_group())
-        layout.addWidget(self._build_chiller_group())
+        chiller_group = self._build_chiller_group()
+        if chiller_group:
+            layout.addWidget(chiller_group)
         layout.addWidget(self._build_experiment_group())
 
-        # Settings
         self.btn_settings = QPushButton("Settings")
         self.btn_settings.clicked.connect(self.open_settings)
         layout.addWidget(self.btn_settings)
 
         layout.addStretch()
 
-        scroll = QScrollArea()
-        scroll.setWidget(panel)
-        scroll.setWidgetResizable(True)
-        scroll.setFixedWidth(370)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self.main_layout.addWidget(scroll)
+        self.left_scroll.setWidget(panel)
+
+        self.chk_save_csv.setChecked(save_csv)
+        if was_connected:
+            self.btn_connect.setText("Disconnect")
+            self.btn_connect.setStyleSheet("background-color: #ccffcc;")
+            self._set_controls_enabled(True)
+        # A rebuild during a live RH-control run must not leave the new buttons
+        # claiming the loop is stopped while the controller is still driving it.
+        if self.controller.rh_control_active and self.btn_toggle_rh_control:
+            self._show_rh_control_running()
+        self._refresh_device_dots()
 
     def _build_device_status_group(self) -> QGroupBox:
         # Devices — compact: colored-dot indicators + connect button on one row
@@ -267,33 +403,34 @@ class MainWindow(QMainWindow):
         conn_vbox = QVBoxLayout()
         conn_vbox.setSpacing(4)
 
-        # 2×2 grid of [● Name] indicators
+        # Grid of [● Tag] indicators, one per configured device (3 per row).
         dot_grid = QWidget()
         dot_layout = QGridLayout(dot_grid)
         dot_layout.setContentsMargins(0, 0, 0, 0)
         dot_layout.setSpacing(2)
 
         self.device_labels = {}
-        _devices = [
-            ("dry_mfc",    "Dry MFC"),
-            ("wet_mfc",    "Wet MFC"),
-            ("hygrometer", "Hygro"),
-            ("chiller",    "Chiller"),
-            ("firesting",  "O₂"),
-        ]
-        for idx, (key, short_name) in enumerate(_devices):
+        specs = self.config.get("devices", []) or []
+        for idx, spec in enumerate(specs):
+            dtype = reg.get_type(spec)
+            if dtype is None:
+                continue
+            dev_id = spec["id"]
             dot = QLabel("●")
             dot.setFixedWidth(16)
-            if self.config.get(f"{key}_enabled", False):
-                dot.setStyleSheet("color: #dd2222; font-size: 14px;")
-                dot.setToolTip("Disconnected")
-            else:
-                dot.setStyleSheet("color: #888888; font-size: 14px;")
-                dot.setToolTip("Disabled")
-            self.device_labels[key] = dot
+            enabled = bool(spec.get("enabled", True))
+            dot.setStyleSheet(
+                f"color: {'#dd2222' if enabled else '#888888'}; font-size: 14px;"
+            )
+            dot.setToolTip("Disconnected" if enabled else "Disabled")
+            self.device_labels[dev_id] = dot
 
-            name_lbl = QLabel(short_name)
-            name_lbl.setStyleSheet("font-size: 11px;")
+            tag = spec.get("tag", dev_id)
+            name_lbl = self._elided_label(
+                tag, _DOT_TAG_WIDTH, "font-size: 11px;",
+                tooltip=(f"{tag}\n{dtype.label}\nPort: {spec.get('port', '—')}\n"
+                         f"Role: {reg.ROLE_LABELS.get(spec.get('role', reg.ROLE_NONE))}"),
+            )
 
             cell = QWidget()
             cell_h = QHBoxLayout(cell)
@@ -306,6 +443,11 @@ class MainWindow(QMainWindow):
             row, col = divmod(idx, 2)
             dot_layout.addWidget(cell, row, col)
 
+        if not self.device_labels:
+            hint = QLabel("No devices configured — add them under Settings.")
+            hint.setWordWrap(True)
+            hint.setStyleSheet("color: #888888; font-size: 11px;")
+            conn_vbox.addWidget(hint)
         conn_vbox.addWidget(dot_grid)
 
         # Bottom row: Save CSV checkbox + Connect/Disconnect button
@@ -321,22 +463,25 @@ class MainWindow(QMainWindow):
         conn_group.setLayout(conn_vbox)
         return conn_group
 
-    def _build_manual_flow_group(self) -> QGroupBox:
-        # Manual Control
-        manual_group = QGroupBox("Manual Control")
-        manual_layout = QFormLayout()
-        
-        self.spin_dry = QDoubleSpinBox()
-        self.spin_dry.setRange(0, 5.0)
-        self.spin_dry.setDecimals(1)  # MFC flow resolution: 0.1 L/min (e.g. 0.1, 1.5)
-        self.spin_dry.setSingleStep(0.1)
-        self.spin_dry.setSuffix(" L/min")
+    def _build_manual_flow_group(self) -> Optional[QGroupBox]:
+        """One flow row per configured MFC. Hidden when the rig has none."""
+        mfc_specs = self._specs_with_cap("flow_setpoint")
+        if not mfc_specs:
+            return None
 
-        self.spin_wet = QDoubleSpinBox()
-        self.spin_wet.setRange(0, 5.0)
-        self.spin_wet.setDecimals(1)  # MFC flow resolution: 0.1 L/min (e.g. 0.1, 1.5)
-        self.spin_wet.setSingleStep(0.1)
-        self.spin_wet.setSuffix(" L/min")
+        manual_group = QGroupBox("Manual Control")
+        manual_layout = self._compact_form()
+
+        for spec in mfc_specs:
+            spin = QDoubleSpinBox()
+            spin.setRange(0, 5.0)
+            spin.setDecimals(1)  # MFC flow resolution: 0.1 L/min (e.g. 0.1, 1.5)
+            spin.setSingleStep(0.1)
+            spin.setSuffix(" L/min")
+            self.flow_spins[spec["id"]] = spin
+            manual_layout.addRow(
+                self._elided_label(spec.get("tag", spec["id"]), _ROW_TAG_WIDTH), spin
+            )
 
         self.chk_ramp_flow = QCheckBox("Stepwise ramp")
         self.chk_ramp_flow.setChecked(True)
@@ -348,33 +493,37 @@ class MainWindow(QMainWindow):
         self.btn_set_flow = QPushButton("Set Flow Rates")
         self.btn_set_flow.clicked.connect(self.set_manual_flow)
         self.btn_set_flow.setEnabled(False)
+        self._control_buttons.append(self.btn_set_flow)
 
-        # Purge: one-touch toggle that overrides flows with 3 L/min wet, 0 dry.
-        self.btn_purge = QPushButton("Purge")
-        self.btn_purge.setCheckable(True)
-        self.btn_purge.setEnabled(False)
-        self.btn_purge.setMaximumWidth(70)
-        self.btn_purge.setStyleSheet(_PURGE_STYLE_OFF)
-        self.btn_purge.setToolTip(
-            "On: force 3 L/min wet, 0 L/min dry.\n"
-            "Off: restore the dry/wet setpoints above."
-        )
-        self.btn_purge.toggled.connect(self.toggle_purge)
-
-        # Ramp checkbox and the compact purge toggle share one row.
         ramp_row = QHBoxLayout()
         ramp_row.setContentsMargins(0, 0, 0, 0)
         ramp_row.addWidget(self.chk_ramp_flow)
         ramp_row.addStretch()
-        ramp_row.addWidget(self.btn_purge)
 
-        # Flows are no longer plotted (they stay near-constant), so show the
-        # live measured values (and setpoints) here instead. Updated each poll.
-        self.lbl_flow_readout = QLabel("Dry — · Wet — L/min")
+        # Purge: one-touch toggle that overrides the wet/dry pair. Only offered
+        # when both roles exist — it means nothing without them.
+        self.btn_purge = None
+        if (reg.role_holder(self._enabled_specs(), reg.ROLE_WET_FLOW)
+                and reg.role_holder(self._enabled_specs(), reg.ROLE_DRY_FLOW)):
+            self.btn_purge = QPushButton("Purge")
+            self.btn_purge.setCheckable(True)
+            self.btn_purge.setEnabled(False)
+            self.btn_purge.setMaximumWidth(70)
+            self.btn_purge.setStyleSheet(_PURGE_STYLE_OFF)
+            self.btn_purge.setToolTip(
+                "On: force 3 L/min wet, 0 L/min dry.\n"
+                "Off: restore the setpoints above."
+            )
+            self.btn_purge.toggled.connect(self.toggle_purge)
+            self._control_buttons.append(self.btn_purge)
+            ramp_row.addWidget(self.btn_purge)
+
+        # Flows are not plotted at full detail here, so show the live measured
+        # values (and setpoints) as text. Updated each poll.
+        self.lbl_flow_readout = QLabel("—")
+        self.lbl_flow_readout.setWordWrap(True)
         self.lbl_flow_readout.setStyleSheet("font-size: 11px; color: #444444;")
 
-        manual_layout.addRow("Dry Flow:", self.spin_dry)
-        manual_layout.addRow("Wet Flow:", self.spin_wet)
         manual_layout.addRow(ramp_row)
         manual_layout.addRow(self.btn_set_flow)
         manual_layout.addRow("Measured:", self.lbl_flow_readout)
@@ -382,9 +531,22 @@ class MainWindow(QMainWindow):
         return manual_group
 
     def _build_rh_control_group(self) -> QGroupBox:
-        # RH Control
+        """RH Control — needs a wet MFC, a dry MFC and an RH source."""
         rh_group = QGroupBox("RH Control (PID)")
-        rh_layout = QFormLayout()
+        rh_layout = self._compact_form()
+
+        if not self.controller.has_rh_control_roles():
+            self.btn_toggle_rh_control = None
+            self.lbl_rh_pid_status = QLabel("Unavailable")
+            hint = QLabel(
+                "Assign the <b>wet flow</b>, <b>dry flow</b> and <b>RH source</b> "
+                "roles under Settings → Devices to enable RH control."
+            )
+            hint.setWordWrap(True)
+            hint.setStyleSheet("color: #888888; font-size: 11px;")
+            rh_layout.addRow(hint)
+            rh_group.setLayout(rh_layout)
+            return rh_group
 
         self.spin_rh_target = QDoubleSpinBox()
         self.spin_rh_target.setRange(0, 100)
@@ -394,56 +556,78 @@ class MainWindow(QMainWindow):
         self.spin_rh_total_flow = QDoubleSpinBox()
         self.spin_rh_total_flow.setRange(0, 5.0)
         self.spin_rh_total_flow.setSingleStep(0.1)
-        self.spin_rh_total_flow.setValue(2.0)
+        self.spin_rh_total_flow.setValue(self.config.get("max_flow", 2.0))
         self.spin_rh_total_flow.setSuffix(" L/min")
 
         self.btn_toggle_rh_control = QPushButton("Start RH Control")
-        # self.btn_toggle_rh_control.setCheckable(True) # Managing state manually might be better
         self.btn_toggle_rh_control.clicked.connect(self.toggle_rh_control)
         self.btn_toggle_rh_control.setEnabled(False)
+        self._control_buttons.append(self.btn_toggle_rh_control)
 
         self.lbl_rh_pid_status = QLabel("Inactive")
         self.lbl_rh_pid_status.setStyleSheet("color: gray")
 
-        rh_layout.addRow("Target RH:", self.spin_rh_target)
-        rh_layout.addRow("Total Flow:", self.spin_rh_total_flow)
+        rh_layout.addRow("Target:", self.spin_rh_target)
+        rh_layout.addRow("Total:", self.spin_rh_total_flow)
         rh_layout.addRow(self.btn_toggle_rh_control)
-        rh_layout.addRow("PID Status:", self.lbl_rh_pid_status)
+        rh_layout.addRow("Status:", self.lbl_rh_pid_status)
         rh_group.setLayout(rh_layout)
         return rh_group
 
-    def _build_chiller_group(self) -> QGroupBox:
-        # Chiller Control
-        chiller_group = QGroupBox("Chiller Control")
-        chiller_layout = QFormLayout()
-        
-        self.spin_chiller_temp = QDoubleSpinBox()
-        self.spin_chiller_temp.setRange(-20, 100)
-        self.spin_chiller_temp.setSingleStep(0.1)
-        self.spin_chiller_temp.setSuffix(" °C")
-        
-        self.btn_set_chiller = QPushButton("Set Temperature")
-        self.btn_set_chiller.clicked.connect(self.set_chiller_temp)
-        self.btn_set_chiller.setEnabled(False)
-        
+    def _build_chiller_group(self) -> Optional[QGroupBox]:
+        """One setpoint row per device that accepts a temperature setpoint."""
+        chiller_specs = self._specs_with_cap("temp_setpoint")
+        if not chiller_specs:
+            return None
+
+        chiller_group = QGroupBox("Temperature Control")
+        chiller_layout = self._compact_form()
+
+        for spec in chiller_specs:
+            dev_id = spec["id"]
+            spin = QDoubleSpinBox()
+            spin.setRange(-20, 100)
+            spin.setSingleStep(0.1)
+            spin.setSuffix(" °C")
+            self.chiller_spins[dev_id] = spin
+
+            btn = QPushButton("Set")
+            btn.setMaximumWidth(60)
+            btn.setEnabled(False)
+            btn.clicked.connect(lambda _, d=dev_id: self.set_chiller_temp(d))
+            self._control_buttons.append(btn)
+
+            row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
+            row.addWidget(spin)
+            row.addWidget(btn)
+            chiller_layout.addRow(
+                self._elided_label(spec.get("tag", dev_id), _ROW_TAG_WIDTH), row
+            )
+
         self.lbl_chiller_monitor = QLabel("Monitor: Inactive")
         self.lbl_chiller_monitor.setStyleSheet("color: gray")
-        
-        chiller_layout.addRow("Set Temp:", self.spin_chiller_temp)
-        chiller_layout.addRow(self.btn_set_chiller)
         chiller_layout.addRow(self.lbl_chiller_monitor)
-        
+
         chiller_group.setLayout(chiller_layout)
         return chiller_group
 
     def _build_experiment_group(self) -> QGroupBox:
         # Experiment Control
         exp_group = QGroupBox("RH Ramp Experiment")
-        exp_layout = QFormLayout()
+        exp_layout = self._compact_form()
 
-        # Mode selector (always visible)
+        # Mode selector. RH mode needs the closed-loop roles; without them only
+        # the open-loop flow ramp is offered.
         self.combo_experiment_mode = QComboBox()
-        self.combo_experiment_mode.addItems(["Flow", "RH"])
+        self.combo_experiment_mode.addItem("Flow")
+        if self.controller.has_rh_control_roles():
+            self.combo_experiment_mode.addItem("RH")
+        else:
+            self.combo_experiment_mode.setToolTip(
+                "RH mode needs the wet flow, dry flow and RH source roles "
+                "assigned under Settings → Devices."
+            )
         saved_mode = self.config.get('experiment_mode', 'flow')
         self.combo_experiment_mode.setCurrentText("Flow" if saved_mode.lower() == 'flow' else "RH")
 
@@ -457,7 +641,8 @@ class MainWindow(QMainWindow):
 
         # ── Flow mode widget group ──────────────────────────────────────────
         self.flow_mode_widget = QWidget()
-        flow_form = QFormLayout(self.flow_mode_widget)
+        flow_form = self._compact_form()
+        self.flow_mode_widget.setLayout(flow_form)
         flow_form.setContentsMargins(0, 0, 0, 0)
 
         self.spin_flow_start = QDoubleSpinBox()
@@ -481,13 +666,14 @@ class MainWindow(QMainWindow):
         self.spin_flow_step.setValue(self.config.get('experiment_flow_step', 0.1))
         self.spin_flow_step.setSuffix(" L/min")
 
-        flow_form.addRow("Start wet flow:", self.spin_flow_start)
-        flow_form.addRow("End wet flow:", self.spin_flow_end)
-        flow_form.addRow("Wet flow step:", self.spin_flow_step)
+        flow_form.addRow("Start:", self.spin_flow_start)
+        flow_form.addRow("End:", self.spin_flow_end)
+        flow_form.addRow("Step:", self.spin_flow_step)
 
         # ── RH mode widget group ────────────────────────────────────────────
         self.rh_mode_widget = QWidget()
-        rh_form = QFormLayout(self.rh_mode_widget)
+        rh_form = self._compact_form()
+        self.rh_mode_widget.setLayout(rh_form)
         rh_form.setContentsMargins(0, 0, 0, 0)
 
         self.spin_rh_start = QDoubleSpinBox()
@@ -511,17 +697,18 @@ class MainWindow(QMainWindow):
         self.spin_rh_step.setValue(self.config.get('experiment_rh_step', 5.0))
         self.spin_rh_step.setSuffix(" %")
 
-        rh_form.addRow("Start RH:", self.spin_rh_start)
-        rh_form.addRow("End RH:", self.spin_rh_end)
-        rh_form.addRow("RH step:", self.spin_rh_step)
+        rh_form.addRow("Start:", self.spin_rh_start)
+        rh_form.addRow("End:", self.spin_rh_end)
+        rh_form.addRow("Step:", self.spin_rh_step)
 
         # ── Assemble experiment panel ───────────────────────────────────────
         self.btn_start_exp = QPushButton("Start Experiment")
         self.btn_start_exp.clicked.connect(self.toggle_experiment)
         self.btn_start_exp.setEnabled(False)
+        self._control_buttons.append(self.btn_start_exp)
 
         exp_layout.addRow("Mode:", self.combo_experiment_mode)
-        exp_layout.addRow("Hold time:", self.spin_hold_time)
+        exp_layout.addRow("Hold:", self.spin_hold_time)
         exp_layout.addRow(self.flow_mode_widget)
         exp_layout.addRow(self.rh_mode_widget)
         exp_layout.addRow(self.btn_start_exp)
@@ -560,19 +747,18 @@ class MainWindow(QMainWindow):
 
                 any_connected = False
                 any_failed = False
-                for key in self.device_labels:
-                    if key in results:
-                        if results[key]:
-                            self._set_device_dot(key, "Connected")
+                for dev_id in self.device_labels:
+                    if dev_id in results:
+                        if results[dev_id]:
+                            self._set_device_dot(dev_id, "Connected")
                             any_connected = True
                         else:
-                            self._set_device_dot(key, "Failed")
+                            self._set_device_dot(dev_id, "Failed")
                             any_failed = True
+                    elif not self._spec_by_id(dev_id).get("enabled", True):
+                        self._set_device_dot(dev_id, "Disabled")
                     else:
-                        if not self.config.get(f"{key}_enabled", True):
-                            self._set_device_dot(key, "Disabled")
-                        else:
-                            self._set_device_dot(key, "Not configured")
+                        self._set_device_dot(dev_id, "Not configured")
 
                 if any_connected and not any_failed:
                     self.btn_connect.setText("Disconnect")
@@ -591,6 +777,8 @@ class MainWindow(QMainWindow):
                         print(f"Failed to start background log: {e}")
 
                 if any_connected:
+                    # Series depend on which devices actually came up.
+                    self.plot_widget.configure(self.controller.build_series_manifest())
                     self._start_poll_worker()
             except Exception as e:
                 QMessageBox.critical(self, "Error", str(e))
@@ -606,39 +794,61 @@ class MainWindow(QMainWindow):
             self.btn_connect.setText("Connect")
             self.btn_connect.setStyleSheet("")
             self._set_controls_enabled(False)
-            for key in self.device_labels:
-                status = "Disabled" if not self.config.get(f"{key}_enabled", True) else "Disconnected"
-                self._set_device_dot(key, status)
+            for dev_id in self.device_labels:
+                enabled = self._spec_by_id(dev_id).get("enabled", True)
+                self._set_device_dot(dev_id, "Disconnected" if enabled else "Disabled")
+
+    def _flow_kwargs_from_spins(self) -> dict:
+        """Split the per-MFC spinboxes into role kwargs + extra device ids."""
+        specs = self._enabled_specs()
+        by_role = {
+            role: (reg.role_holder(specs, role) or {}).get("id")
+            for role in (reg.ROLE_DRY_FLOW, reg.ROLE_WET_FLOW)
+        }
+        kwargs = {"dry_flow": None, "wet_flow": None, "extra": {}}
+        for dev_id, spin in self.flow_spins.items():
+            if dev_id == by_role[reg.ROLE_DRY_FLOW]:
+                kwargs["dry_flow"] = spin.value()
+            elif dev_id == by_role[reg.ROLE_WET_FLOW]:
+                kwargs["wet_flow"] = spin.value()
+            else:
+                kwargs["extra"][dev_id] = spin.value()
+        return kwargs
 
     def set_manual_flow(self):
-        self._apply_flow(self.spin_dry.value(), self.spin_wet.value())
+        self._apply_flow(**self._flow_kwargs_from_spins())
 
     def toggle_purge(self, checked: bool):
-        """Purge on: force 3 L/min wet, 0 dry. Off: restore the spinbox flows."""
+        """Purge on: force 3 L/min wet, 0 dry. Off: restore the spinbox flows.
+
+        Only the wet/dry pair is overridden — auxiliary MFCs keep their flows.
+        """
         self.btn_purge.setText("Purging" if checked else "Purge")
         self.btn_purge.setStyleSheet(_PURGE_STYLE_ON if checked else _PURGE_STYLE_OFF)
         # Disable manual flow entry while purging so it can't fight the override.
-        self.spin_dry.setEnabled(not checked)
-        self.spin_wet.setEnabled(not checked)
+        for spin in self.flow_spins.values():
+            spin.setEnabled(not checked)
         self.btn_set_flow.setEnabled(not checked)
         if checked:
-            self._apply_flow(0.0, 3.0)
+            self._apply_flow(dry_flow=0.0, wet_flow=3.0)
         else:
-            self._apply_flow(self.spin_dry.value(), self.spin_wet.value())
+            self._apply_flow(**self._flow_kwargs_from_spins())
 
-    def _apply_flow(self, dry: float, wet: float):
+    def _apply_flow(self, dry_flow=None, wet_flow=None, extra=None):
         self._stop_poll_worker()  # avoid concurrent serial access
         if self.chk_ramp_flow.isChecked():
             # Gradual stepwise ramp via background worker
             self.btn_set_flow.setEnabled(False)
-            self.flow_ramp_worker = FlowRampWorker(self.controller, dry, wet)
+            self.flow_ramp_worker = FlowRampWorker(self.controller, dry_flow, wet_flow, extra)
             self.flow_ramp_worker.finished.connect(self._on_flow_ramp_finished)
             self.flow_ramp_worker.error.connect(self._on_flow_ramp_error)
             self.flow_ramp_worker.start()
         else:
             # Instant jump — set directly, no ramp
             try:
-                self.controller.set_flow_rates(dry_flow=dry, wet_flow=wet, ramp_flow=False)
+                self.controller.set_flow_rates(
+                    dry_flow=dry_flow, wet_flow=wet_flow, extra=extra, ramp_flow=False
+                )
             except Exception as e:
                 QMessageBox.warning(self, "Error", f"Failed to set flow: {e}")
             finally:
@@ -654,7 +864,8 @@ class MainWindow(QMainWindow):
         if worker is not None:
             worker.wait()
         # Stay disabled while purge is active so it can't override the purge flows.
-        self.btn_set_flow.setEnabled(not self.btn_purge.isChecked())
+        purging = self.btn_purge is not None and self.btn_purge.isChecked()
+        self.btn_set_flow.setEnabled(not purging)
         if self.controller.is_connected():
             self._start_poll_worker()
 
@@ -662,12 +873,16 @@ class MainWindow(QMainWindow):
         # Just report — thread cleanup and poll restart happen in _on_flow_ramp_finished.
         QMessageBox.warning(self, "Error", f"Failed to set flow: {msg}")
 
-    def set_chiller_temp(self):
-        temp = self.spin_chiller_temp.value()
+    def set_chiller_temp(self, dev_id: str):
+        inst = self.controller.devices.get(dev_id)
+        if inst is None:
+            QMessageBox.warning(self, "Error", "That device is not connected.")
+            return
+        temp = self.chiller_spins[dev_id].value()
         self._stop_poll_worker()
         try:
-            self.controller.chiller.set_setpoint_temperature(temp)
-            self.controller.chiller.start_control()
+            inst.driver.set_temperature(temp)
+            inst.driver.start_control()
             self.target_chiller_temp = temp
             self.lbl_chiller_monitor.setText("Monitor: Waiting...")
             self.lbl_chiller_monitor.setStyleSheet("color: orange")
@@ -692,15 +907,19 @@ class MainWindow(QMainWindow):
             total_flow = self.spin_rh_total_flow.value()
             
             self.controller.set_rh_control_active(True, target, total_flow)
-            
-            self.btn_toggle_rh_control.setText("Stop RH Control")
-            self.btn_toggle_rh_control.setStyleSheet("background-color: #ffcccc") # Light red to indicate active/stop
-            
-            # Disable inputs to prevent conflict
-            self.btn_set_flow.setEnabled(False)
-            self.spin_rh_target.setEnabled(False) 
-            self.spin_rh_total_flow.setEnabled(False)
-            self.btn_start_exp.setEnabled(False)
+            self._show_rh_control_running()
+
+    def _show_rh_control_running(self):
+        """Put the RH-control widgets into their active state."""
+        self.btn_toggle_rh_control.setText("Stop RH Control")
+        # Light red to indicate active/stop
+        self.btn_toggle_rh_control.setStyleSheet("background-color: #ffcccc")
+
+        # Disable inputs to prevent conflict with the loop.
+        self.btn_set_flow.setEnabled(False)
+        self.spin_rh_target.setEnabled(False)
+        self.spin_rh_total_flow.setEnabled(False)
+        self.btn_start_exp.setEnabled(False)
 
     def _on_experiment_mode_changed(self, mode_text: str):
         self.flow_mode_widget.setVisible(mode_text == "Flow")
@@ -790,8 +1009,10 @@ class MainWindow(QMainWindow):
 
     def _on_poll_data(self, data: dict):
         try:
-            curr_rh = data.get('rh_chiller') if data.get('rh_chiller') is not None else data.get('rh_hygrometer')
-            if self.controller.rh_control_active:
+            curr_rh = self.controller.current_rh(data)
+            if self.btn_toggle_rh_control is None:
+                pass  # RH control unavailable — its roles aren't assigned
+            elif self.controller.rh_control_active:
                 self.controller.update_rh_control_loop(curr_rh)
                 status = self.controller.get_rh_control_status(curr_rh)
                 self.lbl_rh_pid_status.setText(status)
@@ -815,13 +1036,13 @@ class MainWindow(QMainWindow):
         recovers."""
         try:
             health = self.controller.device_health
-            for key in self.device_labels:
-                if not bool(self.config.get(f"{key}_enabled", True)):
+            for dev_id in self.device_labels:
+                if not bool(self._spec_by_id(dev_id).get("enabled", True)):
                     continue  # leave "Disabled" dots alone
-                if getattr(self.controller, key, None) is None:
+                if dev_id not in self.controller.devices:
                     continue  # not present / failed at connect — keep its dot
                 self._set_device_dot(
-                    key, "Connected" if health.get(key, False) else "Disconnected"
+                    dev_id, "Connected" if health.get(dev_id, False) else "Disconnected"
                 )
         except Exception:
             pass
@@ -843,10 +1064,16 @@ class MainWindow(QMainWindow):
             def _fmt(v):
                 return f"{v:.2f}" if v is not None else "—"
 
-            self.lbl_flow_readout.setText(
-                f"Dry {_fmt(data.get('dry_flow'))} (set {_fmt(data.get('dry_flow_setpoint'))}) · "
-                f"Wet {_fmt(data.get('wet_flow'))} (set {_fmt(data.get('wet_flow_setpoint'))}) L/min"
-            )
+            if self.flow_spins:
+                parts = []
+                for dev_id in self.flow_spins:
+                    tag = self._spec_by_id(dev_id).get("tag", dev_id)
+                    prefix = self.controller.column_prefix(dev_id)
+                    parts.append(
+                        f"{tag} {_fmt(data.get(f'{prefix}_flow'))} "
+                        f"(set {_fmt(data.get(f'{prefix}_setpoint'))})"
+                    )
+                self.lbl_flow_readout.setText(" · ".join(parts) + " L/min")
 
         except Exception:
             # Don't spam errors

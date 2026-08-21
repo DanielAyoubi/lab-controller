@@ -1,8 +1,11 @@
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QLineEdit,
     QSpinBox, QDoubleSpinBox, QDialogButtonBox,
-    QTabWidget, QWidget, QCheckBox, QLabel
+    QTabWidget, QWidget, QMessageBox, QLabel
 )
+
+from src.gui.widgets.device_editor import DeviceListEditor
+
 
 class SettingsDialog(QDialog):
     def __init__(self, config: dict, parent=None):
@@ -16,17 +19,39 @@ class SettingsDialog(QDialog):
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
         
-        self._create_general_tab()
+        # Devices first: it is the tab that describes the rig, and the one
+        # people actually come here to change.
         self._create_devices_tab()
+        self._create_general_tab()
         self._create_experiment_tab()
         
         buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | 
+            QDialogButtonBox.StandardButton.Ok |
             QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def _on_accept(self):
+        """Validate the device list before closing — a bad list breaks connect."""
+        error = self.device_editor.validate()
+        if error:
+            QMessageBox.warning(self, "Invalid device setup", error)
+            self.tabs.setCurrentWidget(self.device_editor)
+            return
+
+        warning = self.device_editor.port_warning()
+        if warning:
+            proceed = QMessageBox.question(
+                self, "Shared port", warning + "\n\nSave anyway?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if proceed != QMessageBox.StandardButton.Yes:
+                self.tabs.setCurrentWidget(self.device_editor)
+                return
+
+        self.accept()
 
     def _create_general_tab(self):
         tab = QWidget()
@@ -54,76 +79,9 @@ class SettingsDialog(QDialog):
         self.tabs.addTab(tab, "General")
 
     def _create_devices_tab(self):
-        tab = QWidget()
-        layout = QFormLayout(tab)
-        # Enable / disable toggles
-        self.dry_mfc_enabled = QCheckBox("Dry MFC enabled")
-        self.dry_mfc_enabled.setChecked(bool(self.config.get("dry_mfc_enabled", True)))
-        layout.addRow(self.dry_mfc_enabled)
-
-        self.wet_mfc_enabled = QCheckBox("Wet MFC enabled")
-        self.wet_mfc_enabled.setChecked(bool(self.config.get("wet_mfc_enabled", True)))
-        layout.addRow(self.wet_mfc_enabled)
-
-        self.hygrometer_enabled = QCheckBox("Hygrometer enabled")
-        self.hygrometer_enabled.setChecked(bool(self.config.get("hygrometer_enabled", True)))
-        layout.addRow(self.hygrometer_enabled)
-
-        self.chiller_enabled = QCheckBox("Chiller enabled")
-        self.chiller_enabled.setChecked(bool(self.config.get("chiller_enabled", True)))
-        layout.addRow(self.chiller_enabled)
-
-        self.firesting_enabled = QCheckBox("FireSting O2 enabled")
-        self.firesting_enabled.setChecked(bool(self.config.get("firesting_enabled", True)))
-        layout.addRow(self.firesting_enabled)
-        
-        self.dry_mfc_port = QLineEdit(self.config.get("dry_mfc_port", "COM6"))
-        layout.addRow("Dry MFC Port:", self.dry_mfc_port)
-        
-        self.wet_mfc_port = QLineEdit(self.config.get("wet_mfc_port", "COM7"))
-        layout.addRow("Wet MFC Port:", self.wet_mfc_port)
-
-        # Modbus RTU slave addresses (1–247) for the two MFCs.
-        self.dry_mfc_address = QSpinBox()
-        self.dry_mfc_address.setRange(1, 247)
-        self.dry_mfc_address.setValue(int(self.config.get("dry_mfc_address", 1)))
-        layout.addRow("Dry MFC Address:", self.dry_mfc_address)
-
-        self.wet_mfc_address = QSpinBox()
-        self.wet_mfc_address.setRange(1, 247)
-        self.wet_mfc_address.setValue(int(self.config.get("wet_mfc_address", 247)))
-        layout.addRow("Wet MFC Address:", self.wet_mfc_address)
-
-        self.hygrometer_port = QLineEdit(self.config.get("hygrometer_port", "COM9"))
-        layout.addRow("Hygrometer Port:", self.hygrometer_port)
-
-        self.chiller_port = QLineEdit(self.config.get("chiller_port", "COM8"))
-        layout.addRow("Chiller Port:", self.chiller_port)
-
-        self.firesting_port = QLineEdit(self.config.get("firesting_port", "COM17"))
-        layout.addRow("FireSting O2 Port:", self.firesting_port)
-
-        self.mfc_baudrate = QSpinBox()
-        self.mfc_baudrate.setRange(1200, 115200)
-        self.mfc_baudrate.setValue(self.config.get("mfc_baudrate", 9600))
-        layout.addRow("MFC Baudrate:", self.mfc_baudrate)
-        
-        self.hygrometer_baudrate = QSpinBox()
-        self.hygrometer_baudrate.setRange(1200, 115200)
-        self.hygrometer_baudrate.setValue(self.config.get("hygrometer_baudrate", 19200))
-        layout.addRow("Hygrometer Baudrate:", self.hygrometer_baudrate)
-
-        self.chiller_baudrate = QSpinBox()
-        self.chiller_baudrate.setRange(1200, 115200)
-        self.chiller_baudrate.setValue(self.config.get("chiller_baudrate", 9600))
-        layout.addRow("Chiller Baudrate:", self.chiller_baudrate)
-
-        self.firesting_baudrate = QSpinBox()
-        self.firesting_baudrate.setRange(1200, 115200)
-        self.firesting_baudrate.setValue(self.config.get("firesting_baudrate", 19200))
-        layout.addRow("FireSting O2 Baudrate:", self.firesting_baudrate)
-
-        self.tabs.addTab(tab, "Devices")
+        """Device list editor — see src/gui/widgets/device_editor.py."""
+        self.device_editor = DeviceListEditor(self.config.get("devices", []))
+        self.tabs.addTab(self.device_editor, "Devices")
 
     def _create_experiment_tab(self):
         tab = QWidget()
@@ -289,22 +247,7 @@ class SettingsDialog(QDialog):
             "log_prefix": self.log_prefix.text(),
             "max_plot_points": self.max_plot_points.value(),
             "control_interval": int(self.control_interval.value()),
-            "dry_mfc_enabled": bool(self.dry_mfc_enabled.isChecked()),
-            "wet_mfc_enabled": bool(self.wet_mfc_enabled.isChecked()),
-            "hygrometer_enabled": bool(self.hygrometer_enabled.isChecked()),
-            "chiller_enabled": bool(self.chiller_enabled.isChecked()),
-            "firesting_enabled": bool(self.firesting_enabled.isChecked()),
-            "dry_mfc_port": self.dry_mfc_port.text(),
-            "wet_mfc_port": self.wet_mfc_port.text(),
-            "dry_mfc_address": self.dry_mfc_address.value(),
-            "wet_mfc_address": self.wet_mfc_address.value(),
-            "hygrometer_port": self.hygrometer_port.text(),
-            "chiller_port": self.chiller_port.text(),
-            "firesting_port": self.firesting_port.text(),
-            "mfc_baudrate": self.mfc_baudrate.value(),
-            "hygrometer_baudrate": self.hygrometer_baudrate.value(),
-            "chiller_baudrate": self.chiller_baudrate.value(),
-            "firesting_baudrate": self.firesting_baudrate.value(),
+            "devices": self.device_editor.get_devices(),
             "experiment_flow_start": self.experiment_flow_start.value(),
             "experiment_flow_end": self.experiment_flow_end.value(),
             "experiment_flow_step": self.experiment_flow_step.value(),

@@ -15,6 +15,57 @@ def apply_settings(config: dict, new_config: dict, logger, pid) -> None:
 # value token after a key is rewritten — comments and formatting are untouched.
 _VALUE_TOKEN = r'"(?:[^"\\]|\\.)*"|true|false|null|-?\d+(?:\.\d+)?'
 
+_OPENERS = {"[": "]", "{": "}"}
+
+
+def _find_container_end(text: str, start: int) -> int:
+    """Index just past the balanced ``[...]``/``{...}`` beginning at ``start``.
+
+    Brackets inside string literals are ignored, so a Windows path or a COM
+    port containing a bracket can't throw off the scan. Returns -1 if the
+    container never closes.
+    """
+    closer = _OPENERS.get(text[start])
+    if closer is None:
+        return -1
+    depth = 0
+    i, n = start, len(text)
+    in_string = escape = False
+    while i < n:
+        c = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif c == "\\":
+                escape = True
+            elif c == '"':
+                in_string = False
+        elif c == '"':
+            in_string = True
+        elif c in _OPENERS:
+            depth += 1
+        elif c in ("]", "}"):
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return -1
+
+
+def _replace_container(text: str, key: str, value) -> tuple:
+    """Rewrite a whole array/object value in place. Returns (text, replaced)."""
+    m = re.search(rf'"{re.escape(key)}"\s*:\s*', text)
+    if not m or m.end() >= len(text) or text[m.end()] not in _OPENERS:
+        return text, False
+    end = _find_container_end(text, m.end())
+    if end == -1:
+        return text, False
+    # Indent the re-serialised block to sit under the key's own indentation.
+    line_start = text.rfind("\n", 0, m.start()) + 1
+    indent = text[line_start:m.start()]
+    body = json.dumps(value, indent=2, ensure_ascii=False).replace("\n", "\n" + indent)
+    return text[:m.start()] + f'"{key}": ' + body + text[end:], True
+
 
 def save_config_to_file(settings: dict, dest_path, template_path=None) -> None:
     """Write ``settings`` into a config.json on disk, preserving the file's
@@ -31,6 +82,14 @@ def save_config_to_file(settings: dict, dest_path, template_path=None) -> None:
 
     missing = {}
     for key, value in settings.items():
+        if isinstance(value, (list, dict)):
+            # Nested values (the `devices` array) need a balanced-bracket scan;
+            # the scalar regex below can't match across lines.
+            text, replaced = _replace_container(text, key, value)
+            if not replaced:
+                missing[key] = json.dumps(value, indent=2, ensure_ascii=False
+                                          ).replace("\n", "\n  ")
+            continue
         formatted = json.dumps(value)
         pattern = rf'("{re.escape(key)}"\s*:\s*)(?:{_VALUE_TOKEN})'
         # Function replacement avoids backreference issues when the new value

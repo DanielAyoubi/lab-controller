@@ -3,10 +3,11 @@ import time
 from typing import Optional
 
 class JulaboChiller:
-    def __init__(self, port, baudrate=9600, timeout=1):
+    def __init__(self, port, baudrate=9600, timeout=1, name: str = "Chiller"):
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
+        self.name = name
         self.ser = None
         self.connected = False
 
@@ -143,6 +144,20 @@ class JulaboChiller:
         command = f"out_sp_00 {temperature}"
         self.send_command(command)
         print(f"Set temperature to {temperature}")
+
+    # Name the "temp_setpoint" capability probes for (see registry.DeviceType.caps).
+    set_temperature = set_setpoint_temperature
+
+    def read(self) -> dict:
+        """One poll, keyed by the channel keys declared in the registry.
+
+        The external probe temperature may legitimately be None (no probe
+        fitted), so the controller uses the setpoint as the liveness signal.
+        """
+        return {
+            "temp": self.get_external_temperature(),
+            "setpoint": self.get_setpoint_temperature(),
+        }
 
     def start_control(self):
         self.send_command("out_mode_05 1")

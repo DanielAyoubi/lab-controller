@@ -35,17 +35,20 @@ class FlowRampWorker(QThread):
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, controller, dry_flow, wet_flow):
+    def __init__(self, controller, dry_flow, wet_flow, extra=None):
         super().__init__()
         self.controller = controller
         self.dry_flow = dry_flow
         self.wet_flow = wet_flow
+        # Flows for MFCs that hold no role, keyed by device id.
+        self.extra = extra or {}
 
     def run(self):
         try:
             self.controller.set_flow_rates(
                 dry_flow=self.dry_flow,
                 wet_flow=self.wet_flow,
+                extra=self.extra,
                 ramp_flow=True,
             )
         except Exception as e:

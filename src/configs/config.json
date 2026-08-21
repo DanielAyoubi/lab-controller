@@ -3,28 +3,55 @@
   "log_prefix": "nsim_log",
   "max_plot_points": 500,
 
-  "dry_mfc_port": "COM6",
-  "wet_mfc_port": "COM4",
-  "hygrometer_port": "COM7",
-  "chiller_port": "COM15",
-  "firesting_port": "COM17",
-  "vaisala_RH_port": "COM21",
-
-  "mfc_baudrate": 9600,
-  "hygrometer_baudrate": 19200,
-  "chiller_baudrate": 9600,
-  "firesting_baudrate": 19200,
-  "vaisala_RH_baudrate": 19200,
-
-  "dry_mfc_address": 247,
-  "wet_mfc_address": 1,
-
-  "dry_mfc_enabled": true,
-  "wet_mfc_enabled": true,
-  "hygrometer_enabled": true,
-  "chiller_enabled": true,
-  "firesting_enabled": true,
-  "vaisala_RH_enabled": true,
+  // The lab setup. Add/remove devices in Settings → Devices, or edit here.
+  //   type    one of: vogtlin_mfc, dewmaster_hygrometer, vaisala_rh,
+  //           julabo_chiller, firesting_o2   (see src/devices/registry.py)
+  //   tag     display name — plot legend, control panel labels
+  //   id      CSV column prefix; fixed at creation, never renamed
+  //   role    what the control loops use this device for. One holder each:
+  //           wet_flow, dry_flow, rh_source, temp_source, o2_source, none
+  "devices": [
+    {
+      "id": "wet_mfc",
+      "type": "vogtlin_mfc",
+      "tag": "Wet MFC",
+      "role": "wet_flow",
+      "enabled": true,
+      "port": "COM23",
+      "baudrate": 9600,
+      "address": 24
+    },
+    {
+      "id": "vaisala_hmp110_rh_probe_2",
+      "type": "vaisala_rh",
+      "tag": "RH upstream",
+      "role": "rh_source",
+      "enabled": true,
+      "port": "COM24",
+      "baudrate": 19200,
+      "address": 240
+    },
+    {
+      "id": "vaisala_hmp110_rh_probe_2_2",
+      "type": "vaisala_rh",
+      "tag": "RH downstream",
+      "role": "none",
+      "enabled": true,
+      "port": "COM21",
+      "baudrate": 19200,
+      "address": 240
+    },
+    {
+      "id": "vogtlin_mfc_3",
+      "type": "vogtlin_mfc",
+      "tag": "Dry MFC",
+      "role": "dry_flow",
+      "enabled": true,
+      "port": "COM22",
+      "baudrate": 9600,
+      "address": 23
+    }
+  ],
 
   "experiment_hold_time": 180.0,
   "max_flow": 2.0,

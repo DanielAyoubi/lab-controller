@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from collections import deque
 from datetime import datetime
 import numpy as np
@@ -7,37 +7,38 @@ import pyqtgraph as pg
 from PyQt6.QtWidgets import QWidget, QVBoxLayout
 from PyQt6.QtCore import Qt
 
+from src.devices.registry import PANELS
+from src.utility import series_style
 
-# Match Matplotlib's single-letter colours so the appearance is preserved.
-_COLORS = {
-    "b": (0, 0, 255),
-    "r": (255, 0, 0),
-    "g": (0, 128, 0),
-    "c": (0, 191, 191),
+# Legend text: a touch larger than pyqtgraph's 9pt default, and bold, so it
+# stays readable sitting directly on the grid without a panel behind it.
+_LEGEND_TEXT_SIZE = "10pt"
+
+# series_style names line styles abstractly so the saved PNG can use the same
+# vocabulary; this maps them onto Qt's pen styles.
+_PEN_STYLES = {
+    "solid": Qt.PenStyle.SolidLine,
+    "dashdot": Qt.PenStyle.DashDotLine,
+    "dot": Qt.PenStyle.DotLine,
+    "dashed": Qt.PenStyle.DashLine,
 }
 
 
-# Names of the per-series data deques. Keeping the list in one place means
-# __init__, set_max_points and clear can't drift out of sync.
-# Flows are not plotted (they stay near-constant; shown as a live readout in
-# the main window and always logged to CSV), and the hygrometer-temperature
-# based series are omitted from the display for the same reason.
-_SERIES = (
-    "timestamps", "dewpoint_temp", "chiller_temp", "chiller_setpoint",
-    "rh_chiller", "rh_chiller_calibrated", "oxygen",
-)
-
-
 class RealTimePlotWidget(QWidget):
+    """Three shared-x panels — flows, temperatures, percentages.
+
+    The widget knows nothing about specific devices. It is driven by a *series
+    manifest* (see ``registry.build_manifest``): a list of
+    ``{column, label, panel, dashed}`` entries produced from the configured
+    device set. ``configure()`` rebuilds the traces whenever that set changes,
+    which is what puts each device's tag into the legend.
+    """
+
     def __init__(self, max_points: int = 500):
         super().__init__()
         self.max_points = max_points
+        self.manifest: List[Dict] = []
 
-        # Data storage
-        for name in _SERIES:
-            setattr(self, name, deque(maxlen=max_points))
-
-        # Layout
         pg.setConfigOptions(antialias=True, background="w", foreground="k")
         layout = QVBoxLayout()
         self.glw = pg.GraphicsLayoutWidget()
@@ -45,102 +46,149 @@ class RealTimePlotWidget(QWidget):
         layout.addWidget(self.glw)
         self.setLayout(layout)
 
-        self._lines = {}
-        self._setup_plots()
+        self.timestamps: deque = deque(maxlen=max_points)
+        self._series: Dict[str, deque] = {}   # column -> values
+        self._lines: Dict[str, pg.PlotDataItem] = {}
+        self._panels: Dict[str, pg.PlotItem] = {}
+        self._legends: Dict[str, pg.LegendItem] = {}
+        self._styles: Dict[str, Dict] = {}
+
+        self._setup_panels()
+
+    # ── Layout ───────────────────────────────────────────────────────────────
+
+    def _setup_panels(self):
+        """Create the three empty panels once; traces are added by configure()."""
+        first: Optional[pg.PlotItem] = None
+        for row, (key, title, y_label) in enumerate(PANELS):
+            plot = self.glw.addPlot(
+                row=row, col=0,
+                axisItems={"bottom": pg.DateAxisItem(orientation="bottom")},
+            )
+            plot.setTitle(f"<b>{title}</b>", size="10pt")
+            plot.setLabel("left", y_label)
+            plot.showGrid(x=True, y=True, alpha=0.3)
+            # pyqtgraph defaults to auto SI-prefix scaling, which for small
+            # values tacks a multiplier onto the axis instead of the real numbers.
+            plot.getAxis("left").enableAutoSIPrefix(False)
+            # No panel behind the legend — it sits directly on the plot. The
+            # labels carry their own contrast instead (see _embolden_legend).
+            self._legends[key] = plot.addLegend(
+                offset=(10, 10),
+                labelTextColor=(0, 0, 0),
+                labelTextSize=_LEGEND_TEXT_SIZE,
+            )
+            if first is None:
+                first = plot
+            else:
+                plot.setXLink(first)   # shared x-axis across all three panels
+            self._panels[key] = plot
+        if PANELS:
+            self._panels[PANELS[-1][0]].setLabel("bottom", "Time")
+
+    def configure(self, manifest: List[Dict]):
+        """Rebuild the traces for a new device set. Drops all buffered data."""
+        self.manifest = list(manifest or [])
+
+        for line in self._lines.values():
+            line.clear()
+        for legend in self._legends.values():
+            legend.clear()
+        for plot in self._panels.values():
+            plot.clearPlots()
+        self._lines.clear()
+        self._series.clear()
+        self.timestamps.clear()
+
+        # One colour and marker shape per device, so a setpoint reads as the
+        # dashed twin of its own measurement rather than a separate quantity.
+        self._styles = series_style.assign_styles(self.manifest)
+        for entry in self.manifest:
+            panel = self._panels.get(entry["panel"])
+            if panel is None:
+                continue
+            column = entry["column"]
+            style = self._styles[column]
+            self._series[column] = deque(maxlen=self.max_points)
+            self._lines[column] = (
+                self._dashed_line(panel, style, entry["label"])
+                if style["dashed"]
+                else self._solid_line(panel, style, entry["label"])
+            )
+
+        self._embolden_legends()
+
+    def _embolden_legends(self):
+        """Re-render every legend label in bold.
+
+        ``LegendItem.addItem`` builds its ``LabelItem`` with only colour, size
+        and justification — there is no way to ask for bold up front — so the
+        labels are restyled once the traces exist. ``setText`` merges these
+        options into the ones already set, keeping colour and size.
+        """
+        for legend in self._legends.values():
+            for _sample, label in legend.items:
+                label.setText(label.text, bold=True, size=_LEGEND_TEXT_SIZE)
+            legend.updateSize()
+
+    @staticmethod
+    def _solid_line(plot, style, label):
+        """Measurement: a solid line carrying the device's marker shape.
+
+        Markers are thinned out at draw time (see ``_redraw``) — the shape is
+        there to identify the trace and to appear in the legend sample, not to
+        mark every sample.
+        """
+        rgb = style["rgb"]
+        item = plot.plot(
+            [], [],
+            pen=pg.mkPen(rgb, width=style["width"],
+                         style=_PEN_STYLES[style["line_style"]]),
+            symbol=style["symbol"], symbolSize=series_style.SYMBOL_SIZE,
+            symbolBrush=rgb, symbolPen=pg.mkPen("w", width=0.5),
+            name=label,
+        )
+        item.setZValue(style["z"])
+        return item
+
+    @staticmethod
+    def _dashed_line(plot, style, label):
+        """Setpoint: a pale, wide dashed halo drawn behind its measurement."""
+        pen = pg.mkPen(style["rgb"], width=style["width"],
+                       style=Qt.PenStyle.DashLine)
+        item = plot.plot([], [], pen=pen, name=label)
+        item.setZValue(style["z"])
+        return item
+
+    # ── Data ─────────────────────────────────────────────────────────────────
 
     def set_max_points(self, max_points: int):
         self.max_points = max_points
-        # Re-create deques with new maxlen, preserving existing data
-        for name in _SERIES:
-            setattr(self, name, deque(getattr(self, name), maxlen=max_points))
+        # Re-create deques with the new maxlen, preserving existing data.
+        self.timestamps = deque(self.timestamps, maxlen=max_points)
+        for column, values in self._series.items():
+            self._series[column] = deque(values, maxlen=max_points)
 
     def clear(self):
         """Drop all buffered data and blank every line on the plot."""
-        for name in _SERIES:
-            getattr(self, name).clear()
+        self.timestamps.clear()
+        for values in self._series.values():
+            values.clear()
         for line in self._lines.values():
             line.setData([], [])
 
-    def _solid_line(self, plot, key, color, label):
-        """Solid line with a dot marker at every point (Matplotlib '<c>.-')."""
-        rgb = _COLORS[color]
-        self._lines[key] = plot.plot(
-            [],
-            [],
-            pen=pg.mkPen(rgb, width=1),
-            symbol="o",
-            symbolSize=4,
-            symbolBrush=rgb,
-            symbolPen=None,
-            name=label,
-        )
-
-    def _dashed_line(self, plot, key, color, label):
-        """Semi-transparent dashed line, no markers (Matplotlib '<c>--' alpha=0.5)."""
-        rgb = _COLORS[color]
-        pen = pg.mkPen((*rgb, 128), width=1, style=Qt.PenStyle.DashLine)
-        self._lines[key] = plot.plot([], [], pen=pen, name=label)
-
-    def _style_plot(self, plot, title, y_label, x_label=None):
-        plot.setTitle(f"<b>{title}</b>", size="10pt")
-        plot.setLabel("left", y_label)
-        if x_label:
-            plot.setLabel("bottom", x_label)
-        plot.showGrid(x=True, y=True, alpha=0.3)
-        plot.addLegend(offset=(10, 10))
-
-    def _setup_plots(self):
-        axis1 = pg.DateAxisItem(orientation="bottom")
-        axis2 = pg.DateAxisItem(orientation="bottom")
-
-        self.p1 = self.glw.addPlot(row=0, col=0, axisItems={"bottom": axis1})
-        self.p2 = self.glw.addPlot(row=1, col=0, axisItems={"bottom": axis2})
-
-        # Shared x-axis (replaces Matplotlib sharex=True)
-        self.p2.setXLink(self.p1)
-
-        # Show raw values on the y-axes. pyqtgraph defaults to auto SI-prefix
-        # scaling, which for small values tacks a multiplier / unit prefix onto
-        # the axis instead of printing the actual numbers.
-        for plot in (self.p1, self.p2):
-            plot.getAxis("left").enableAutoSIPrefix(False)
-
-        # Plot 1: Temperature. The RH panel below is derived from these
-        # (dewpoint + chiller temp), so the colours match across panels:
-        # chiller temp (blue) feeds RH (Chiller Temp) (blue).
-        self._style_plot(self.p1, "Temperature", "Temp (°C)")
-        self._solid_line(self.p1, "dewpoint", "c", "Dewpoint")
-        self._solid_line(self.p1, "chiller", "b", "Chiller")
-        self._dashed_line(self.p1, "chiller_set", "b", "Chiller Set")
-
-        # Plot 2: Humidity + Oxygen (both in %)
-        self._style_plot(self.p2, "RH & O₂", "%", x_label="Time")
-        self._solid_line(self.p2, "rh_chiller", "b", "RH (Chiller Temp)")
-        self._solid_line(self.p2, "rh_chiller_calibrated", "r", "RH (Chiller Temp, Calibrated)")
-        self._solid_line(self.p2, "oxygen", "g", "O₂ (FireSting)")
-
     def update_plot(self, data: Dict[str, Optional[float]]):
-        # Parse timestamp
-        if "timestamp" not in data:
+        raw = data.get("timestamp")
+        if raw is None:
             timestamp = datetime.now()
         else:
-            timestamp = (
-                datetime.fromisoformat(data["timestamp"])
-                if isinstance(data["timestamp"], str)
-                else data["timestamp"]
-            )
-
-        # Coerce None -> np.nan so numpy conversions later don't raise
-        def _coerce(v):
-            return v if v is not None else np.nan
+            timestamp = datetime.fromisoformat(raw) if isinstance(raw, str) else raw
 
         self.timestamps.append(timestamp)
-        self.dewpoint_temp.append(_coerce(data.get("dewpoint_temp")))
-        self.chiller_temp.append(_coerce(data.get("chiller_temp")))
-        self.chiller_setpoint.append(_coerce(data.get("chiller_setpoint")))
-        self.rh_chiller.append(_coerce(data.get("rh_chiller")))
-        self.rh_chiller_calibrated.append(_coerce(data.get("rh_chiller_calibrated")))
-        self.oxygen.append(_coerce(data.get("oxygen")))
+        for column, values in self._series.items():
+            value = data.get(column)
+            # Coerce None -> nan so the numpy conversion below never raises.
+            values.append(value if value is not None else np.nan)
 
         self._redraw()
 
@@ -151,19 +199,29 @@ class RealTimePlotWidget(QWidget):
         # DateAxisItem expects POSIX seconds on the x-axis.
         time_data = np.array([t.timestamp() for t in self.timestamps], dtype=np.float64)
 
-        # Helper to update line with valid data only (to ensure lines connect)
-        def update_line_filtered(line, series):
-            y_data = np.array(list(series), dtype=np.float64)
-            mask = ~np.isnan(y_data)
-            if np.any(mask):
-                line.setData(time_data[mask], y_data[mask])
-            else:
+        for column, values in self._series.items():
+            line = self._lines.get(column)
+            if line is None:
+                continue
+            y_data = np.array(list(values), dtype=np.float64)
+            # Plot only the valid points so gaps from a dropped-out device
+            # connect through instead of breaking the trace.
+            n = min(len(time_data), len(y_data))
+            mask = ~np.isnan(y_data[:n])
+            if not np.any(mask):
                 line.setData([], [])
+                continue
 
-        update_line_filtered(self._lines["dewpoint"], self.dewpoint_temp)
-        update_line_filtered(self._lines["chiller"], self.chiller_temp)
-        update_line_filtered(self._lines["chiller_set"], self.chiller_setpoint)
+            xs, ys = time_data[:n][mask], y_data[:n][mask]
+            style = self._styles.get(column, {})
+            if style.get("dashed", True):
+                line.setData(xs, ys)
+                continue
 
-        update_line_filtered(self._lines["rh_chiller"], self.rh_chiller)
-        update_line_filtered(self._lines["rh_chiller_calibrated"], self.rh_chiller_calibrated)
-        update_line_filtered(self._lines["oxygen"], self.oxygen)
+            # Show the marker on every Nth point only. Drawing one per sample
+            # turns a 500-point trace into a solid band that hides both the
+            # line's colour and its shape; a size of 0 skips a point without
+            # removing the symbol from the item (so the legend still shows it).
+            sizes = np.zeros(len(xs))
+            sizes[::series_style.marker_stride(len(xs))] = series_style.SYMBOL_SIZE
+            line.setData(xs, ys, symbolSize=sizes)

@@ -99,7 +99,7 @@ class FireStingO2:
         except Exception as e:
             print(f"Reconnect failed for {self.name}: {e}")
 
-    def get_readings(self):
+    def read(self):
         if not self.ser or not self.ser.is_open:
             return None
         try:
@@ -108,6 +108,9 @@ class FireStingO2:
             print(f"Serial error on {self.name}, reconnecting: {e}")
             self._reconnect()
             return None
+
+    # Kept for notebooks/scripts that predate the uniform Device interface.
+    get_readings = read
 
     def _query(self):
         """Trigger one measurement and return {"oxygen": %O2}, or None.

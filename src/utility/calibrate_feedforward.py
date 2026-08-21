@@ -28,10 +28,14 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 # RH columns in priority order, matching what the controller tracks
-# (Controller._stabilize_to_rh prefers rh_chiller, falls back to rh_hygrometer).
+# (Controller.current_rh prefers rh_chiller, then rh_hygrometer, then rh_probe).
+# rh_probe is written when the RH source reports RH directly (a Vaisala); in
+# that case rh_hygrometer is not logged at all, since it would be the same
+# quantity derived a second time.
 _RH_KEYS = {
     "chiller": "rh_chiller",
     "hygrometer": "rh_hygrometer",
+    "probe": "rh_probe",
     "calibrated": "rh_chiller_calibrated",
 }
 
@@ -64,7 +68,7 @@ def _pick_rh_key(rows: List[Dict[str, str]], requested: str) -> str:
     if requested != "auto":
         return _RH_KEYS[requested]
     best, best_n = _RH_KEYS["chiller"], -1
-    for key in (_RH_KEYS["chiller"], _RH_KEYS["hygrometer"]):
+    for key in (_RH_KEYS["chiller"], _RH_KEYS["hygrometer"], _RH_KEYS["probe"]):
         n = sum(1 for r in rows if _to_float(r.get(key)) is not None)
         if n > best_n:
             best, best_n = key, n
@@ -221,7 +225,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         "csv", nargs="?", help="Flow-ramp CSV (default: latest RH_ramp_*.csv under data/)"
     )
     parser.add_argument(
-        "--rh", choices=["auto", "chiller", "hygrometer", "calibrated"], default="auto",
+        "--rh", choices=["auto", "chiller", "hygrometer", "probe", "calibrated"],
+        default="auto",
         help="Which RH column to calibrate against (default: auto)",
     )
     parser.add_argument(

@@ -1,49 +1,57 @@
 import time
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from src.devices.chillers import JulaboChiller
-from src.devices.O2_monitors import FireStingO2
-from src.devices.RH_probes import EdgeTechHygrometer
+from src.devices import registry as reg
 from src.devices.pid_controller import RhPidController
-from src.devices.mass_flow_controllers import VogtlinMFC
 from src.utility.data_logger import DataLogger
 from src.utility.plot_saver import save_experiment_plot
 from src.utility.compute_RH import compute_relative_humidity, calibrated_RH
 
 
+@dataclass
+class DeviceInstance:
+    """A configured device: its spec from config.json plus the live driver."""
+    spec: Dict[str, Any]
+    driver: Any
+
+    @property
+    def id(self) -> str:
+        return self.spec["id"]
+
+    @property
+    def tag(self) -> str:
+        return self.spec.get("tag", self.spec["id"])
+
+    def has_cap(self, cap: str) -> bool:
+        dtype = reg.get_type(self.spec)
+        return bool(dtype and cap in dtype.caps)
+
+
 class Controller:
+    """Orchestrates an arbitrary, user-declared set of devices.
+
+    Devices come from ``config["devices"]`` (see :mod:`src.devices.registry`).
+    Control logic never names a concrete device — it looks devices up by
+    *role*, so the RH loop and the ramp experiment work unchanged whether the
+    rig has two MFCs or eight.
+    """
+
     def __init__(self, config: Dict):
         self.config = config
         self.running = False
         self.connected = False
 
-        self.dry_mfc: Optional[VogtlinMFC] = None
-        self.wet_mfc: Optional[VogtlinMFC] = None
-        self.hygrometer: Optional[EdgeTechHygrometer] = None
-        self.chiller: Optional[JulaboChiller] = None
-        self.firesting: Optional[FireStingO2] = None
+        self.devices: Dict[str, DeviceInstance] = {}
+        self.by_role: Dict[str, DeviceInstance] = {}
+        self._log_fields: Optional[List[str]] = None
+        self._column_prefixes: Optional[Dict[str, str]] = None
 
         self.logger = DataLogger(
             output_dir=self.config.get("log_dir", "data"),
             filename_prefix=self.config.get("log_prefix", "nsim_log"),
         )
-
-        self.log_fields = [
-            "timestamp",
-            "dry_flow",
-            "wet_flow",
-            "dry_flow_setpoint",
-            "wet_flow_setpoint",
-            "hygrometer_temp",
-            "dewpoint_temp",
-            "rh_hygrometer",
-            "rh_chiller",
-            "rh_chiller_calibrated",
-            "chiller_temp",
-            "chiller_setpoint",
-            "oxygen",
-        ]
 
         self.rh_control_active = False
         self.rh_setpoint = 50.0
@@ -57,47 +65,103 @@ class Controller:
         self._last_reconnect: Dict[str, float] = {}
         self.reconnect_interval = float(config.get("reconnect_interval", 5.0))
 
+    # ── Device set ───────────────────────────────────────────────────────────
+
+    @property
+    def device_specs(self) -> List[Dict[str, Any]]:
+        return self.config.get("devices", []) or []
+
+    @property
+    def log_fields(self) -> List[str]:
+        """CSV columns for the current device set (cached; see refresh_devices)."""
+        if self._log_fields is None:
+            self._log_fields = reg.build_log_fields(self.device_specs)
+        return self._log_fields
+
+    def build_series_manifest(self) -> List[Dict[str, Any]]:
+        """Plottable series for the current device set (live plot + saved PNG)."""
+        return reg.build_manifest(self.device_specs)
+
+    @property
+    def column_prefixes(self) -> Dict[str, str]:
+        """Device id -> CSV column prefix, derived from the tags."""
+        if self._column_prefixes is None:
+            self._column_prefixes = reg.column_prefixes(self.device_specs)
+        return self._column_prefixes
+
+    def column_prefix(self, device_id: str) -> str:
+        return self.column_prefixes.get(device_id, device_id)
+
+    def refresh_devices(self) -> None:
+        """Drop cached views of the device list after a settings change."""
+        self._log_fields = None
+        self._column_prefixes = None
+
+    def device_by_role(self, role: str) -> Optional[DeviceInstance]:
+        return self.by_role.get(role)
+
+    def _driver_for_role(self, role: str):
+        inst = self.by_role.get(role)
+        return inst.driver if inst else None
+
+    # Convenience views used by the RH loop and the ramp experiment, which care
+    # about a device's function rather than its identity.
+    @property
+    def dry_mfc(self):
+        return self._driver_for_role(reg.ROLE_DRY_FLOW)
+
+    @property
+    def wet_mfc(self):
+        return self._driver_for_role(reg.ROLE_WET_FLOW)
+
+    @property
+    def chiller(self):
+        return self._driver_for_role(reg.ROLE_TEMP_SOURCE)
+
+    def mfc_instances(self) -> List[DeviceInstance]:
+        """Every connected device that can take a flow setpoint, in config order."""
+        return [i for i in self.devices.values() if i.has_cap("flow_setpoint")]
+
+    def has_rh_control_roles(self) -> bool:
+        """True when the RH loop has everything it needs: wet + dry + a probe."""
+        specs = self.device_specs
+        return all(
+            reg.role_holder(specs, r) is not None
+            for r in (reg.ROLE_WET_FLOW, reg.ROLE_DRY_FLOW, reg.ROLE_RH_SOURCE)
+        )
+
     # ── Connection ───────────────────────────────────────────────────────────
 
     def connect_devices(self) -> Dict[str, bool]:
-        cfg = self.config
         results: Dict[str, bool] = {}
 
         # Start from a clean slate so a device that previously connected (or was
-        # since disabled) never lingers as a stale reference across sessions.
-        self.dry_mfc = self.wet_mfc = self.hygrometer = self.chiller = None
-        self.firesting = None
+        # since removed/disabled) never lingers as a stale reference.
+        self.devices = {}
+        self.by_role = {}
         self.device_health = {}
         self._last_reconnect = {}
+        self.refresh_devices()
 
-        # (attr key, log label, port config key, factory). Only the device class
-        # and its constructor args vary between devices; everything else (the
-        # enabled+port gate, connect, store, health) is identical, so drive it
-        # from one loop.
-        specs = [
-            ("dry_mfc", "dry MFC", "dry_mfc_port", lambda: VogtlinMFC(
-                port=cfg["dry_mfc_port"], address=cfg.get("dry_mfc_address", 1),
-                baudrate=cfg.get("mfc_baudrate", 9600), name="Dry Air MFC")),
-            ("wet_mfc", "wet MFC", "wet_mfc_port", lambda: VogtlinMFC(
-                port=cfg["wet_mfc_port"], address=cfg.get("wet_mfc_address", 247),
-                baudrate=cfg.get("mfc_baudrate", 9600), name="Wet Air MFC")),
-            ("hygrometer", "hygrometer", "hygrometer_port", lambda: EdgeTechHygrometer(
-                port=cfg["hygrometer_port"],
-                baudrate=cfg.get("hygrometer_baudrate", 19200))),
-            ("chiller", "chiller", "chiller_port", lambda: JulaboChiller(
-                port=cfg["chiller_port"],
-                baudrate=cfg.get("chiller_baudrate", 9600))),
-            ("firesting", "FireSting O2", "firesting_port", lambda: FireStingO2(
-                port=cfg["firesting_port"],
-                baudrate=cfg.get("firesting_baudrate", 19200))),
-        ]
-        for key, label, port_key, make in specs:
-            if cfg.get(f"{key}_enabled") and port_key in cfg:
-                dev = make()
-                ok = self._connect_device(dev, label)
-                results[key] = ok
-                setattr(self, key, dev if ok else None)
-                self.device_health[key] = ok
+        for spec in reg.enabled_specs(self.device_specs):
+            dtype = reg.get_type(spec)
+            dev_id = spec["id"]
+            try:
+                driver = dtype.factory(spec)
+            except Exception as e:
+                print(f"Error creating {spec.get('tag', dev_id)}: {e}")
+                results[dev_id] = False
+                continue
+
+            ok = self._connect_device(driver, spec.get("tag", dev_id))
+            results[dev_id] = ok
+            self.device_health[dev_id] = ok
+            if ok:
+                inst = DeviceInstance(spec=spec, driver=driver)
+                self.devices[dev_id] = inst
+                role = spec.get("role", reg.ROLE_NONE)
+                if role != reg.ROLE_NONE:
+                    self.by_role[role] = inst
 
         self.connected = any(results.values()) if results else False
         print(f"Controller connected: {self.connected} (Details: {results})")
@@ -105,9 +169,13 @@ class Controller:
 
     def disconnect_devices(self):
         print("Disconnecting devices...")
-        for device in [self.dry_mfc, self.wet_mfc, self.hygrometer, self.chiller, self.firesting]:
-            if device:
-                device.disconnect()
+        for inst in self.devices.values():
+            try:
+                inst.driver.disconnect()
+            except Exception as e:
+                print(f"Error disconnecting {inst.tag}: {e}")
+        self.devices = {}
+        self.by_role = {}
         self.running = False
         self.connected = False
 
@@ -119,7 +187,10 @@ class Controller:
             return bool(device.connect())
         except Exception as e:
             print(f"Error connecting {name}: {e}")
-            return device.is_connected()
+            try:
+                return device.is_connected()
+            except Exception:
+                return False
 
     # ── Sensor Reading ───────────────────────────────────────────────────────
 
@@ -151,71 +222,69 @@ class Controller:
         data: Dict[str, Optional[float | str]] = {f: None for f in self.log_fields}
         data["timestamp"] = datetime.now().isoformat()
 
-        if self.dry_mfc and self._should_read("dry_mfc", self.dry_mfc):
+        # One loop over whatever is configured. Each driver returns its readings
+        # keyed by the channel keys its type declares in the registry; those land
+        # in a "<device id>_<channel>" column, plus the legacy canonical column
+        # when this device holds the matching role.
+        prefixes = self.column_prefixes
+        for dev_id, inst in self.devices.items():
+            if not self._should_read(dev_id, inst.driver):
+                continue
             try:
-                data["dry_flow"] = self.dry_mfc.get_flow()
-                data["dry_flow_setpoint"] = self.dry_mfc.get_setpoint()
-                self.device_health["dry_mfc"] = True
+                readings = inst.driver.read()
             except Exception as e:
-                print(f"Error reading dry MFC: {e}")
-                self.device_health["dry_mfc"] = False
+                print(f"Error reading {inst.tag}: {e}")
+                self.device_health[dev_id] = False
+                continue
 
-        if self.wet_mfc and self._should_read("wet_mfc", self.wet_mfc):
-            try:
-                data["wet_flow"] = self.wet_mfc.get_flow()
-                data["wet_flow_setpoint"] = self.wet_mfc.get_setpoint()
-                self.device_health["wet_mfc"] = True
-            except Exception as e:
-                print(f"Error reading wet MFC: {e}")
-                self.device_health["wet_mfc"] = False
+            # Port open but nothing came back — device powered off / unplugged.
+            if not readings or all(v is None for v in readings.values()):
+                self.device_health[dev_id] = False
+                continue
 
-        if self.hygrometer and self._should_read("hygrometer", self.hygrometer):
-            try:
-                readings = self.hygrometer.get_readings()
-                if readings:
-                    data["hygrometer_temp"] = readings.get("hygrometer_temp")
-                    data["dewpoint_temp"] = readings.get("dewpoint_temp")
-                    self.device_health["hygrometer"] = True
-                else:
-                    # Port open but no reading — device powered off / unplugged.
-                    self.device_health["hygrometer"] = False
-            except Exception as e:
-                print(f"Error reading hygrometer: {e}")
-                self.device_health["hygrometer"] = False
+            self.device_health[dev_id] = True
+            for ch_key, value in readings.items():
+                data[reg.column_name(inst.spec, ch_key, prefixes)] = value
+                alias = reg.alias_for(inst.spec, ch_key)
+                if alias:
+                    data[alias] = value
 
-        if self.chiller and self._should_read("chiller", self.chiller):
-            try:
-                data["chiller_temp"] = self.chiller.get_external_temperature()
-                data["chiller_setpoint"] = self.chiller.get_setpoint_temperature()
-                # Setpoint is always available on a live chiller (external probe
-                # temp may legitimately be None), so use it as the liveness signal.
-                self.device_health["chiller"] = data["chiller_setpoint"] is not None
-            except Exception as e:
-                print(f"Error reading chiller: {e}")
-                self.device_health["chiller"] = False
-
-        if self.firesting and self._should_read("firesting", self.firesting):
-            try:
-                readings = self.firesting.get_readings()
-                if readings:
-                    data["oxygen"] = readings.get("oxygen")
-                    self.device_health["firesting"] = True
-                else:
-                    # Port open but no reading — device powered off / unplugged.
-                    self.device_health["firesting"] = False
-            except Exception as e:
-                print(f"Error reading FireSting O2: {e}")
-                self.device_health["firesting"] = False
-
-        if data["dewpoint_temp"] is not None:
-            dp = data["dewpoint_temp"]
-            if data["hygrometer_temp"] is not None:
-                data["rh_hygrometer"] = compute_relative_humidity(dp=dp, t=data["hygrometer_temp"])
-            if data["chiller_temp"] is not None:
-                data["rh_chiller"] = compute_relative_humidity(dp=dp, t=data["chiller_temp"])
-                data["rh_chiller_calibrated"] = calibrated_RH(data["rh_chiller"])
-
+        self._compute_derived(data)
         return data
+
+    @staticmethod
+    def current_rh(data: Dict) -> Optional[float]:
+        """The RH reading the control loop should act on.
+
+        Preference order: computed from the external temperature probe (it
+        reflects the sample environment), then from the RH source's own
+        temperature, then a probe that reports RH directly (e.g. a Vaisala).
+        """
+        for key in ("rh_chiller", "rh_hygrometer", "rh_probe"):
+            value = data.get(key)
+            if value is not None:
+                return value
+        return None
+
+    @staticmethod
+    def _compute_derived(data: Dict) -> None:
+        """Fill the computed RH columns from the role-holders' readings.
+
+        Works off the legacy alias columns, so it is indifferent to which
+        physical probe is assigned the RH / temperature source roles.
+        """
+        dp = data.get("dewpoint_temp")
+        if dp is None:
+            return
+        # Skipped when the probe reports RH directly (rh_probe): deriving it
+        # again from that probe's own dew point and temperature would duplicate
+        # the reading. Kept in step with registry.DERIVED_SERIES, which drops
+        # the column and its trace in the same case.
+        if data.get("hygrometer_temp") is not None and data.get("rh_probe") is None:
+            data["rh_hygrometer"] = compute_relative_humidity(dp=dp, t=data["hygrometer_temp"])
+        if data.get("chiller_temp") is not None:
+            data["rh_chiller"] = compute_relative_humidity(dp=dp, t=data["chiller_temp"])
+            data["rh_chiller_calibrated"] = calibrated_RH(data["rh_chiller"])
 
     def read_and_log(self, on_data: Optional[Callable[[Dict], None]] = None) -> Dict:
         data = self.read_all_sensors()
@@ -239,7 +308,13 @@ class Controller:
         wet_flow: Optional[float] = None,
         max_flow: Optional[float] = None,
         ramp_flow: bool = True,
+        extra: Optional[Dict[str, float]] = None,
     ) -> bool:
+        """Set flows on the dry/wet role-holders, plus any role-less MFC in ``extra``.
+
+        ``max_flow`` bounds the *chamber* flow, so only the dry+wet pair counts
+        toward it — an auxiliary MFC on its own line is not part of that budget.
+        """
         if max_flow is not None:
             total = (dry_flow or 0.0) + (wet_flow or 0.0)
             if total > max_flow:
@@ -248,41 +323,84 @@ class Controller:
                 )
                 return False
 
+        targets = self._flow_targets(dry_flow, wet_flow, extra)
+        if not targets:
+            return True
+
         if ramp_flow:
-            self._ramp_flows(dry_flow, wet_flow)
+            self._ramp_flows(targets)
 
         success = True
-        for mfc, flow in [(self.dry_mfc, dry_flow), (self.wet_mfc, wet_flow)]:
-            if mfc is None or flow is None:
-                continue
+        for inst, flow in targets:
+            mfc = inst.driver
             try:
                 if mfc.set_flow(flow):
-                    print(f"{mfc.name} setpoint set to {flow:.3f}")
+                    print(f"{inst.tag} setpoint set to {flow:.3f}")
                 else:
-                    print(f"Failed to set {mfc.name} flow")
+                    print(f"Failed to set {inst.tag} flow")
                     success = False
             except Exception as e:
-                print(f"Error setting {mfc.name}: {e}")
+                print(f"Error setting {inst.tag}: {e}")
                 success = False
+
         return success
 
+    def _flow_targets(
+        self,
+        dry_flow: Optional[float],
+        wet_flow: Optional[float],
+        extra: Optional[Dict[str, float]] = None,
+    ) -> List[Tuple[DeviceInstance, float]]:
+        """Resolve (device, setpoint) pairs from role kwargs + explicit ids.
+
+        The dry/wet kwargs address whichever devices hold those roles, so every
+        existing caller (RH loop, experiment ramps) keeps working untouched.
+        ``extra`` addresses role-less MFCs by device id.
+        """
+        targets: List[Tuple[DeviceInstance, float]] = []
+        seen = set()
+        for role, value in ((reg.ROLE_DRY_FLOW, dry_flow), (reg.ROLE_WET_FLOW, wet_flow)):
+            inst = self.by_role.get(role)
+            if inst is not None and value is not None and inst.has_cap("flow_setpoint"):
+                targets.append((inst, float(value)))
+                seen.add(inst.id)
+        for dev_id, value in (extra or {}).items():
+            inst = self.devices.get(dev_id)
+            if (inst is not None and value is not None
+                    and dev_id not in seen and inst.has_cap("flow_setpoint")):
+                targets.append((inst, float(value)))
+                seen.add(dev_id)
+        return targets
+
     def get_current_flows(self) -> tuple:
+        """(dry, wet) setpoints of the role-holding MFCs — used by the RH loop."""
         return (
             self.dry_mfc.get_setpoint() if self.dry_mfc else 0.0,
             self.wet_mfc.get_setpoint() if self.wet_mfc else 0.0,
         )
 
-    def _ramp_flows(self, dry_flow: Optional[float], wet_flow: Optional[float]):
-        current_dry, current_wet = self.get_current_flows()
+    def get_flow_setpoints(self) -> Dict[str, float]:
+        """Current setpoint of every connected MFC, keyed by device id."""
+        setpoints = {}
+        for inst in self.mfc_instances():
+            try:
+                setpoints[inst.id] = inst.driver.get_setpoint()
+            except Exception:
+                setpoints[inst.id] = 0.0
+        return setpoints
 
-        dry_diff = (
-            (dry_flow - current_dry) if (dry_flow is not None and self.dry_mfc) else 0.0
-        )
-        wet_diff = (
-            (wet_flow - current_wet) if (wet_flow is not None and self.wet_mfc) else 0.0
-        )
+    def _ramp_flows(self, targets: List[Tuple[DeviceInstance, float]]):
+        """Walk every target from its current setpoint to the new one together."""
+        moves = []
+        max_delta = 0.0
+        for inst, target in targets:
+            try:
+                current = inst.driver.get_setpoint()
+            except Exception:
+                current = 0.0
+            moves.append((inst, current, target - current))
+            max_delta = max(max_delta, abs(target - current))
 
-        max_delta = max(abs(dry_diff), abs(wet_diff))
         step_size = self.config.get("flow_ramp_step", 0.25)  # L/min (coarse)
         step_delay = self.config.get("flow_ramp_delay", 0.3)  # s between steps
         if max_delta <= step_size:
@@ -295,13 +413,11 @@ class Controller:
         print(f"Ramping flows over {steps} steps ({step_delay:.2f}s/step)...")
         for i in range(1, steps + 1):
             frac = i / steps
-            try:
-                if dry_flow is not None and self.dry_mfc:
-                    self.dry_mfc.set_flow(current_dry + dry_diff * frac)
-                if wet_flow is not None and self.wet_mfc:
-                    self.wet_mfc.set_flow(current_wet + wet_diff * frac)
-            except Exception as e:
-                print(f"Error during flow ramp step {i}: {e}")
+            for inst, current, diff in moves:
+                try:
+                    inst.driver.set_flow(current + diff * frac)
+                except Exception as e:
+                    print(f"Error during {inst.tag} ramp step {i}: {e}")
             time.sleep(step_delay)
 
     # ── RH Control (PID) ──────────────────────────────────────────────────────
@@ -416,11 +532,7 @@ class Controller:
 
             cycle_start = time.time()
             data = self.read_and_log(on_data)
-            current_rh: Optional[float] = (
-                data.get("rh_chiller")
-                if data.get("rh_chiller") is not None
-                else data.get("rh_hygrometer")
-            )
+            current_rh: Optional[float] = self.current_rh(data)
 
             if current_rh is not None:
                 if not dry_only:
@@ -539,7 +651,9 @@ class Controller:
 
             plot_path = None
             try:
-                plot_path = save_experiment_plot(csv_path, step_times, self.logger)
+                plot_path = save_experiment_plot(
+                    csv_path, step_times, self.logger, self.build_series_manifest()
+                )
             except Exception as e:
                 print(f"Failed to save experiment plot: {e}")
             print("Experiment finished.")
