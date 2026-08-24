@@ -202,7 +202,7 @@ lab-controller/
 │   │       └── plot_widget.py       # RealTimePlotWidget — 3 shared-x pyqtgraph panels
 │   └── utility/
 │       ├── data_logger.py           # CSV logger with date sub-folders, 8 KB write buffer
-│       ├── plot_saver.py            # Saves smoothed 3-panel PNG at experiment end (own styling)
+│       ├── plot_saver.py            # Saves a plain quick-look 3-panel PNG at experiment end
 │       ├── compute_RH.py            # Magnus formula: RH from dew-point and ambient temp
 │       └── update_settings.py       # Config path, applies runtime settings, saves config.json
 └── data/                            # Log output directory (created automatically)
