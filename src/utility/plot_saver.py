@@ -11,17 +11,6 @@ def save_experiment_plot(
     logger,
     manifest: Optional[List[Dict]] = None,
 ) -> Optional[str]:
-    """Render the experiment log to a quick-look PNG beside its CSV.
-
-    Deliberately plain — default Matplotlib colours, raw values, one subplot per
-    panel. This is a glance-at-it summary of how the run went, not a reproduction
-    of the live plot; the careful per-device styling lives in ``plot_widget.py``
-    and does not need to be mirrored here.
-
-    ``manifest`` is the series manifest the live plot uses
-    (``Controller.build_series_manifest()``), which supplies the panel grouping
-    and the legend labels for whatever devices were configured.
-    """
     import matplotlib.dates as mdates
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from matplotlib.figure import Figure

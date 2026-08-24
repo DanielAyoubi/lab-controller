@@ -9,17 +9,8 @@ from PyQt6.QtCore import Qt
 
 from src.devices.registry import PANELS
 
-# Legend text: a touch larger than pyqtgraph's 9pt default, and bold, so it
-# stays readable sitting directly on the grid without a panel behind it.
 _LEGEND_TEXT_SIZE = "10pt"
 
-# ── Series styling ───────────────────────────────────────────────────────────
-# Colour identifies the *device*, not the channel: every series a device
-# contributes shares its colour in every panel, so a setpoint reads as the twin
-# of its own measurement rather than an unrelated quantity. plot_saver.py holds
-# the same palette in Matplotlib's vocabulary so the saved PNG matches.
-
-# Colour-blind-friendly ordering: blue / orange / green / red first.
 _PALETTE = [
     (31, 119, 180),   # blue
     (255, 127, 14),   # orange
