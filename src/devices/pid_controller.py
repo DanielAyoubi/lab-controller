@@ -17,6 +17,7 @@ class PidState:
     filtered_d: float = 0.0
     dynamic_settling_time: float = 180.0
     prev_target: Optional[float] = None  # None until the first compute() call
+    extra_settling: float = 0.0  # one-shot soak added to the next armed settle
 
 
 class RhPidController:
@@ -29,8 +30,12 @@ class RhPidController:
     we jump straight to the model estimate and let feedback trim only the small
     residual:
 
-        wet_ratio = ff_gain · (target/100) + ff_offset      ← feedforward (instant)
+        wet_ratio = target/100                             ← feedforward (instant)
                   + Kp·error + Ki·∫error + D-on-measurement  ← PI(D) trim
+
+    The feedforward is the plant physics, computed from the target each step —
+    there is no stored calibration. Any departure from it (bubbler under-
+    saturation, probe offset) is learned at runtime by the integral term below.
 
     The integral term holds the *calibration bias* (bubbler under-saturation,
     temperature/probe offset). That bias is ~constant across targets, so it is
@@ -93,10 +98,10 @@ class RhPidController:
         p = self._params
 
         # ── Feedforward operating point ───────────────────────────────────────
-        # The wet ratio the static plant model says will yield target_rh.
-        ratio_ff = _clamp(
-            p["ff_gain"] * (target_rh / 100.0) + p["ff_offset"], 0.0, 1.0
-        )
+        # The wet ratio the static plant model says will yield target_rh. With a
+        # saturating bubbler on the wet line, steady-state RH ≈ 100 · wet_ratio,
+        # so this is derived fresh each step rather than from a stored fit.
+        ratio_ff = _clamp(target_rh / 100.0, 0.0, 1.0)
 
         # ── D on measurement: update every call (even during settling) ─────────
         kd = p["Kd"]
@@ -177,6 +182,10 @@ class RhPidController:
         Big repositioning moves wait longer (up to settling_time); but never less
         than the transport dead time, so a correction is always judged after its
         effect has propagated to the hygrometer.
+
+        ``state.extra_settling`` adds a one-shot soak on top (consumed here), for
+        callers that repositioned the flows themselves before the first compute()
+        — e.g. experiment pre-conditioning.
         """
         p = self._params
         new_dry_sp = (1.0 - new_wet_ratio) * total_flow
@@ -186,8 +195,9 @@ class RhPidController:
         t_min = max(p["settling_time_min"], p["dead_time"])
         t_max = max(p["settling_time"], t_min)
         self.state.dynamic_settling_time = (
-            t_min + (t_max - t_min) * min(1.0, delta / ref)
+            t_min + (t_max - t_min) * min(1.0, delta / ref) + self.state.extra_settling
         )
+        self.state.extra_settling = 0.0
 
     def get_status(self, rh_setpoint: float, current_rh: Optional[float]) -> str:
         """Return a human-readable status string for display in the GUI."""
@@ -223,9 +233,6 @@ class RhPidController:
             "settling_time_min": config.get("rh_settling_time_min", 5.0),
             "max_flow": config.get("max_flow", 2.0),
             "deadband": config.get("rh_deadband", 1.0),
-            # ── Feedforward + dead-time params (new) ──
-            "ff_gain": config.get("rh_ff_gain", 1.0),
-            "ff_offset": config.get("rh_ff_offset", 0.0),
             "dead_time": config.get("rh_dead_time", 25.0),
             "trim_limit": config.get("rh_trim_limit", 0.6),
         }

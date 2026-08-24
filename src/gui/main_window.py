@@ -1,5 +1,4 @@
 import os
-import sys
 import json
 from typing import Optional
 
@@ -15,8 +14,9 @@ from src.devices.controller import Controller
 from src.gui.widgets.plot_widget import RealTimePlotWidget
 from src.gui.workers import ExperimentWorker, PollWorker, FlowRampWorker
 from src.gui.settings_dialog import SettingsDialog
-from src.utility import config_migration
-from src.utility.update_settings import apply_settings, save_config_to_file
+from src.utility.update_settings import (
+    apply_settings, default_config_path, save_config_to_file,
+)
 
 # Compact styling for the purge toggle (sits inline with the ramp checkbox).
 _PURGE_STYLE_OFF = "font-size: 11px; padding: 2px 6px;"
@@ -60,97 +60,21 @@ class MainWindow(QMainWindow):
     def load_config(self, config_path: Optional[str] = None) -> dict:
         """Load the machine-specific JSON config.
 
-        Source files run from any CWD because the path is resolved relative to
-        this module. When packaged as a PyInstaller executable, an editable
-        ``config.json`` placed next to the .exe takes precedence over the copy
-        bundled inside the executable — so COM ports can be changed without
-        rebuilding.
+        The path is resolved relative to this module, so the app runs from any
+        working directory.
         """
-        candidates = self._config_search_paths(config_path)
-        for path in candidates:
-            if path and os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    self.config_path = path
-                    config = json.loads(self._strip_json_comments(f.read()))
-                # Pre-modular configs describe five fixed devices through flat
-                # keys; convert them to the `devices` list and write it back so
-                # the existing rig keeps working with no manual re-entry.
-                if config_migration.needs_migration(config):
-                    devices = config_migration.migrate(config)
-                    print(f"Migrated {len(devices)} device(s) to the new "
-                          f"'devices' config format.")
-                    self._persist_settings({"devices": devices})
-                else:
-                    # A hand-edited file may leave an implied role unassigned.
-                    reg.assign_default_roles(config.get("devices", []))
-                return config
-        searched = "\n  ".join(p for p in candidates if p)
-        raise FileNotFoundError(
-            "Config file not found. Looked in:\n  "
-            f"{searched}\n"
-            "Place a config.json next to the executable (or in src/configs/ "
-            "when running from source)."
-        )
-
-    @staticmethod
-    def _strip_json_comments(text: str) -> str:
-        """Strip ``//`` line and ``/* */`` block comments from JSON text.
-
-        Lets ``config.json`` carry inline documentation while still being parsed
-        by the standard ``json`` module. Comment markers inside string values are
-        preserved (so e.g. a path or COM port containing ``//`` is left intact).
-        """
-        out = []
-        i, n = 0, len(text)
-        in_string = escape = False
-        while i < n:
-            c = text[i]
-            if in_string:
-                out.append(c)
-                if escape:
-                    escape = False
-                elif c == "\\":
-                    escape = True
-                elif c == '"':
-                    in_string = False
-                i += 1
-            elif c == '"':
-                in_string = True
-                out.append(c)
-                i += 1
-            elif c == "/" and i + 1 < n and text[i + 1] == "/":
-                i += 2
-                while i < n and text[i] not in "\r\n":
-                    i += 1
-            elif c == "/" and i + 1 < n and text[i + 1] == "*":
-                i += 2
-                while i + 1 < n and not (text[i] == "*" and text[i + 1] == "/"):
-                    i += 1
-                i += 2
-            else:
-                out.append(c)
-                i += 1
-        return "".join(out)
-
-    @staticmethod
-    def _config_search_paths(config_path: Optional[str]) -> list:
-        """Ordered list of config.json locations to try (first match wins)."""
-        if config_path:
-            return [config_path]
-
-        paths = []
-        if getattr(sys, "frozen", False):
-            # Packaged exe: prefer an editable config.json beside the executable,
-            # then fall back to the read-only copy bundled inside the onefile.
-            paths.append(os.path.join(os.path.dirname(sys.executable), "config.json"))
-            meipass = getattr(sys, "_MEIPASS", None)
-            if meipass:
-                paths.append(os.path.join(meipass, "src", "configs", "config.json"))
-        paths.append(os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            os.pardir, "configs", "config.json",
-        ))
-        return paths
+        path = str(config_path or default_config_path())
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"Config file not found: {path}. "
+                "Expected a config.json in src/configs/."
+            )
+        self.config_path = path
+        with open(path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        # A hand-edited file may leave an implied role unassigned.
+        reg.assign_default_roles(config.get("devices", []))
+        return config
 
     def _start_poll_worker(self):
         # Stop any existing worker first so we never overwrite a running QThread.
@@ -181,7 +105,7 @@ class MainWindow(QMainWindow):
         # The device list may have changed: rebuild the device-driven left panel
         # and the plot's series before anything tries to touch the old widgets.
         self._rebuild_left_panel()
-        saved_to = self._persist_settings(new_settings)
+        saved_to = self._persist_settings()
 
         # If ports changed, warn the user to reconnect
         persist_note = (f"Saved to {saved_to}." if saved_to
@@ -212,16 +136,15 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"Failed to rotate log after a device change: {e}")
 
-    def _persist_settings(self, new_settings: dict) -> Optional[str]:
-        """Write the changed settings back to config.json, preserving comments.
+    def _persist_settings(self) -> Optional[str]:
+        """Write the in-memory config back to config.json.
 
-        When packaged as an executable the writable target is a config.json next
-        to the .exe (the bundled copy is read-only), using the loaded file as the
-        comment/format template. Returns the path written, or None on failure.
+        Callers update ``self.config`` first; the whole thing is re-serialised.
+        Returns the path written, or None on failure.
         """
         try:
-            dest = self._config_search_paths(None)[0]
-            save_config_to_file(new_settings, dest, template_path=self.config_path)
+            dest = self.config_path or str(default_config_path())
+            save_config_to_file(self.config, dest)
             return dest
         except Exception as e:
             print(f"Failed to save config.json: {e}")
@@ -232,7 +155,6 @@ class MainWindow(QMainWindow):
         if self.controller:
             apply_settings(self.controller.config, self.config,
                            self.controller.logger, self.controller.pid)
-            self.controller.refresh_devices()
 
         if hasattr(self, 'plot_widget'):
             self.plot_widget.set_max_points(self.config.get('max_plot_points', 500))

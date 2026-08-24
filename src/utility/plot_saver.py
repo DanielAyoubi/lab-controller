@@ -3,7 +3,92 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from src.devices.registry import PANELS
-from src.utility import series_style
+
+# ── Series styling ───────────────────────────────────────────────────────────
+# Mirrors plot_widget.py in Matplotlib's vocabulary so the saved PNG matches the
+# live plot: colour identifies the *device*, and every series it contributes
+# shares that colour in every panel. Keep the palette in step with plot_widget.
+
+# Colour-blind-friendly ordering: blue / orange / green / red first.
+_PALETTE = [
+    "#1f77b4",  # blue
+    "#ff7f0e",  # orange
+    "#2ca02c",  # green
+    "#d62728",  # red
+    "#9467bd",  # purple
+    "#17becf",  # cyan
+    "#e377c2",  # pink
+    "#8c564b",  # brown
+    "#bcbd22",  # olive
+    "#7f7f7f",  # grey
+]
+
+# Same shapes as the live plot's pyqtgraph symbols, in Matplotlib's codes.
+_MARKERS = ["o", "s", "v", "D", "p", "h", "*", "^"]
+
+# Line styles for a device's *measurement* channels landing in the same panel.
+# "--" is reserved: it always and only means a setpoint.
+_LINE_STYLES = ["-", "-.", ":"]
+
+_WIDTH_MEASURED = 2.2
+_WIDTH_SETPOINT = 5.0
+_SETPOINT_TINT = 0.6     # how far to blend the device colour toward white
+_Z_MEASURED = 1
+_Z_SETPOINT = -1         # behind, so the measurement stays crisp on top
+
+_MARKERS_PER_TRACE = 22
+
+
+def _marker_stride(n_points: int) -> int:
+    """Draw a marker every Nth point so they never merge into a solid band."""
+    return max(1, n_points // _MARKERS_PER_TRACE)
+
+
+def _lighten(hex_colour: str, amount: float) -> str:
+    """Blend a #rrggbb colour toward white. 0 = unchanged, 1 = white."""
+    rgb = (int(hex_colour[1:3], 16), int(hex_colour[3:5], 16), int(hex_colour[5:7], 16))
+    return "#{:02x}{:02x}{:02x}".format(
+        *(int(round(c + (255 - c) * amount)) for c in rgb)
+    )
+
+
+def _assign_styles(manifest):
+    """Map each manifest column to its Matplotlib drawing style."""
+    groups = []
+    for entry in manifest:
+        group = entry.get("group") or entry["column"]
+        if group not in groups:
+            groups.append(group)
+
+    seen_in_panel = {}   # (group, panel) -> measurement traces so far
+    styles = {}
+    for entry in manifest:
+        group = entry.get("group") or entry["column"]
+        group_idx = groups.index(group)
+        colour = _PALETTE[group_idx % len(_PALETTE)]
+        dashed = bool(entry.get("dashed"))
+
+        if dashed:
+            # A setpoint mirrors its measurement rather than being a channel in
+            # its own right, so it does not consume a line style.
+            channel_idx = 0
+            line_style = "--"
+            colour = _lighten(colour, _SETPOINT_TINT)
+        else:
+            key = (group, entry["panel"])
+            channel_idx = seen_in_panel.get(key, 0)
+            seen_in_panel[key] = channel_idx + 1
+            line_style = _LINE_STYLES[channel_idx % len(_LINE_STYLES)]
+
+        styles[entry["column"]] = {
+            "hex": colour,
+            "marker": _MARKERS[(group_idx + channel_idx) % len(_MARKERS)],
+            "dashed": dashed,
+            "line_style": line_style,
+            "width": _WIDTH_SETPOINT if dashed else _WIDTH_MEASURED,
+            "z": _Z_SETPOINT if dashed else _Z_MEASURED,
+        }
+    return styles
 
 
 def save_experiment_plot(
@@ -34,7 +119,7 @@ def save_experiment_plot(
     if not manifest:
         return None
     # Same colour/marker assignment the live plot uses.
-    styles = series_style.assign_styles(manifest)
+    styles = _assign_styles(manifest)
 
     def _to_float(v):
         try:
@@ -85,9 +170,9 @@ def save_experiment_plot(
         smoothed = _smooth(vs_arr)
         ax.plot(ts, smoothed, label=label, color=style["hex"],
                 linewidth=style["width"], alpha=1.0,
-                linestyle=style["mpl_linestyle"],
-                marker=style["mpl_marker"], markersize=5,
-                markevery=series_style.marker_stride(len(ts)),
+                linestyle=style["line_style"],
+                marker=style["marker"], markersize=5,
+                markevery=_marker_stride(len(ts)),
                 markeredgecolor="white", markeredgewidth=0.5,
                 zorder=style["z"] + 2)
 
@@ -98,7 +183,7 @@ def save_experiment_plot(
             return
         ts, vs = zip(*pairs)
         ax.plot(ts, list(vs), label=label, color=style["hex"],
-                linewidth=style["width"], linestyle=style["mpl_linestyle"],
+                linewidth=style["width"], linestyle=style["line_style"],
                 alpha=1.0, zorder=style["z"], solid_capstyle="butt")
 
     # One panel per registry panel that actually has series in this run.

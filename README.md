@@ -53,45 +53,17 @@ A desktop application for controlling the environmental humidity chamber of an N
    }
    ```
 
-   Upgrading from an older version? A config using the old flat keys
-   (`dry_mfc_port`, `hygrometer_enabled`, …) is converted automatically on first
-   start and written back in the new format.
-
 4. **Run the application:**
    ```
    python main.py
    ```
-
-## Building a standalone executable
-
-To run the app without Python installed, package it into a single Windows
-executable with PyInstaller:
-
-```
-build.bat
-```
-
-This installs PyInstaller (if needed), builds from `LabController.spec`, and
-produces:
-
-| File | Purpose |
-|------|---------|
-| `dist\LabController.exe` | The application — double-click to run |
-| `dist\config.json` | Editable config; set COM ports / settings here |
-
-**Distribute both files together** (keep them in the same folder). On startup the
-exe prefers the `config.json` sitting next to it, so device ports can be changed
-without rebuilding. A default copy is also bundled inside the exe as a fallback.
-
-> To build manually instead of using the script:
-> `.venv\Scripts\pyinstaller --noconfirm --clean LabController.spec`
 
 ## Configuration
 
 All settings live in a single JSON file, **`src/configs/config.json`**. It holds
 both the machine-specific device settings and the application/experiment defaults.
 
-Settings can also be changed at runtime through the **Settings** dialog (General / Devices / Experiment tabs). Changes apply immediately **and** are written back to `config.json`, preserving its comments and formatting.
+Settings can also be changed at runtime through the **Settings** dialog (General / Devices / Experiment tabs). Changes apply immediately **and** are written back to `config.json` (plain JSON, rewritten in full on save).
 
 ### Devices
 
@@ -182,12 +154,10 @@ existing analysis scripts and notebooks keep working unchanged.
 
 ### RH control loop — feedforward
 
-The controller commands the wet-flow ratio as **`wet_ratio = rh_ff_gain · (target_RH / 100) + rh_ff_offset`** (the feedforward), then trims the small remaining error with PI(D). The feedforward is what makes settling fast; calibrate it with the tool described in [Calibrating the RH feedforward](#calibrating-the-rh-feedforward).
+The controller commands the wet-flow ratio as **`wet_ratio = target_RH / 100`** (the feedforward), then trims the small remaining error with PI(D). This is the plant physics — with a saturating bubbler on the wet line, steady-state RH ≈ 100 · wet_ratio — so it is derived in code on every step, with no calibration to maintain. The feedforward is what makes settling fast; any departure from it (bubbler under-saturation, probe offset) is learned at runtime by the integral term.
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `rh_ff_gain` | 1.0 | Feedforward slope. Physics gives ≈ 1.0 (RH ≈ 100 · wet_ratio); raise it if the bubbler under-saturates |
-| `rh_ff_offset` | 0.0 | Feedforward intercept (wet-ratio offset). Usually ≈ 0 |
 | `rh_dead_time` | 25 s | Transport delay between a flow change and the hygrometer registering it. Floors the wait between corrections so each move is judged after its effect arrives |
 | `rh_trim_limit` | 0.6 | Ceiling on the feedback wet-ratio added to the feedforward (prevents a noisy reading flinging the ratio) |
 
@@ -206,85 +176,6 @@ These act only on the *residual* error the feedforward leaves behind, so the gai
 | `rh_settling_time` | 200 s | Max wait after a full-scale flow change before the next correction |
 | `rh_settling_time_min` | 10 s | Min wait after any flow change (floored at `rh_dead_time`) |
 
-## Calibrating the RH feedforward
-
-The RH controller assumes a **static inverse model** of the plant: with a saturating
-bubble bath on the wet line and dry gas on the other, the steady-state RH is, to
-first order, just the mixing ratio — so the wet-flow ratio needed for a target RH is
-
-```
-wet_ratio = rh_ff_gain · (target_RH / 100) + rh_ff_offset
-```
-
-`rh_ff_gain ≈ 1` and `rh_ff_offset ≈ 0` are the physics defaults, but a real bubbler
-slightly under-saturates and the probe has a small offset, so the true line is a bit
-off. Calibrating these two numbers lets the feedforward land the **first** flow move
-within ~1 % RH instead of crawling there, which is the bulk of the speed-up.
-
-### How it works
-
-A **flow-mode** experiment steps the wet flow open-loop and holds at each step, so the
-settled RH at every step is a clean `(RH, wet_ratio)` sample of the map above. The
-calibration tool:
-
-1. Reads the experiment's CSV log.
-2. Groups the rows into steps (by changes in the commanded wet ratio) and averages the
-   **settled tail** of each step (last 50 % of its rows), discarding the transient.
-3. Least-squares fits the line `wet_ratio = gain · (RH / 100) + offset` and reports the
-   two values plus the fit quality (R²).
-
-### How to use it
-
-1. Run a **flow-mode** ramp (`experiment_mode: "flow"`, e.g. wet flow 0 → `max_flow`)
-   so the chamber visits a spread of RH values and settles at each.
-2. Run the tool on the resulting log:
-
-   ```
-   .venv\Scripts\python -m src.utility.calibrate_feedforward
-   ```
-
-   With no arguments it picks the most recent `RH_ramp_*.csv` under `data/`. Pass a
-   path to choose a specific log:
-
-   ```
-   .venv\Scripts\python -m src.utility.calibrate_feedforward data\24_06_2026\RH_ramp_20260624_101500.csv
-   ```
-
-3. It prints the per-step points, the fitted line, and suggested values:
-
-   ```
-        RH (%)  wet_ratio   rows
-          2.03     0.0000     20
-         ...
-         94.04     1.0000     20
-
-     Fit:  wet_ratio = 1.0871·(RH/100) + -0.0216     R² = 1.0000
-
-     Suggested config.json values:
-       "rh_ff_gain": 1.0871,
-       "rh_ff_offset": -0.0216,
-   ```
-
-4. Copy those two values into `config.json`, or let the tool write them for you
-   (comments/formatting preserved — though `config.json` is comment-free by default):
-
-   ```
-   .venv\Scripts\python -m src.utility.calibrate_feedforward --apply
-   ```
-
-**Options:**
-
-| Flag | Description |
-|------|-------------|
-| `--rh chiller\|hygrometer\|calibrated\|auto` | Which RH column to fit against. Default `auto` picks the best-populated; use `chiller` to match what the controller tracks when the chiller probe is connected |
-| `--settle-frac <0–1>` | Fraction of each step's tail averaged as "settled" (default `0.5`) |
-| `--apply` | Write `rh_ff_gain` / `rh_ff_offset` back into `src/configs/config.json` |
-
-The tool warns if R² < 0.95 (noisy or not-yet-settled data — try a longer
-`experiment_hold_time`) or if the gain is far from the ~1.0 the physics predicts.
-`rh_dead_time` is not fitted this way; if you want it precise, read the lag between a
-flow step and the RH starting to move in the same log and set it to that.
-
 ## Project Structure
 
 ```
@@ -296,7 +187,6 @@ lab-controller/
 │   │   └── config.json              # Machine-specific configuration
 │   ├── devices/
 │   │   ├── registry.py              # Device types, channels, roles, CSV/plot generators
-│   │   ├── base.py                  # The Device protocol every driver implements
 │   │   ├── controller.py            # Central orchestrator: device set by role, RH loop, experiment runner
 │   │   ├── mass_flow_controllers.py # Vögtlin Modbus RTU driver (minimalmodbus, big-endian 32-bit floats)
 │   │   ├── RH_probes.py             # EdgeTech DewMaster + Vaisala HMP110 drivers
@@ -312,11 +202,9 @@ lab-controller/
 │   │       └── plot_widget.py       # RealTimePlotWidget — 3 shared-x pyqtgraph panels
 │   └── utility/
 │       ├── data_logger.py           # CSV logger with date sub-folders, 8 KB write buffer
-│       ├── plot_saver.py            # Saves smoothed 3-panel PNG at experiment end
+│       ├── plot_saver.py            # Saves smoothed 3-panel PNG at experiment end (own styling)
 │       ├── compute_RH.py            # Magnus formula: RH from dew-point and ambient temp
-│       ├── config_migration.py      # Converts pre-modular flat config keys to the devices list
-│       ├── calibrate_feedforward.py # Fits rh_ff_gain/offset from a flow-ramp log (CLI tool)
-│       └── update_settings.py       # Applies runtime settings changes to controller/logger/PID
+│       └── update_settings.py       # Config path, applies runtime settings, saves config.json
 └── data/                            # Log output directory (created automatically)
 ```
 

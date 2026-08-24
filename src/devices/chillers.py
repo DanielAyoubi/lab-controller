@@ -1,6 +1,5 @@
 import serial
 import time
-from typing import Optional
 
 class JulaboChiller:
     def __init__(self, port, baudrate=9600, timeout=1, name: str = "Chiller"):
@@ -57,7 +56,6 @@ class JulaboChiller:
         return True
 
     def _probe(self) -> bool:
-        """Send a harmless identity query and confirm the chiller answers."""
         try:
             self.ser.reset_input_buffer()
             self.ser.write(b"version\r\n")
@@ -122,7 +120,7 @@ class JulaboChiller:
         self.send_command("status")
         return self.read_response()
 
-    def _query_float(self, command: str) -> Optional[float]:
+    def _query_float(self, command: str):
         self.send_command(command)
         resp = self.read_response()
         try:
@@ -149,11 +147,6 @@ class JulaboChiller:
     set_temperature = set_setpoint_temperature
 
     def read(self) -> dict:
-        """One poll, keyed by the channel keys declared in the registry.
-
-        The external probe temperature may legitimately be None (no probe
-        fitted), so the controller uses the setpoint as the liveness signal.
-        """
         return {
             "temp": self.get_external_temperature(),
             "setpoint": self.get_setpoint_temperature(),
@@ -162,10 +155,6 @@ class JulaboChiller:
     def start_control(self):
         self.send_command("out_mode_05 1")
         print("Sent START command.")
-
-    def stop_control(self):
-        self.send_command("out_mode_05 0")
-        print("Sent STOP command.")
 
     def close(self):
         self.disconnect()

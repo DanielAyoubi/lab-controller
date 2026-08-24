@@ -75,8 +75,8 @@ ROLE_DUTIES: Dict[str, str] = {
 }
 
 # (role, channel) -> legacy canonical CSV column. These are the names the old
-# fixed schema used; emitting them keeps calibrate_feedforward.py, plot_saver
-# and existing analysis notebooks working against the new dynamic logs.
+# fixed schema used; emitting them keeps plot_saver.py and existing analysis
+# notebooks working against the new dynamic logs.
 ROLE_ALIASES: Dict[str, Dict[str, str]] = {
     ROLE_WET_FLOW: {"flow": "wet_flow", "setpoint": "wet_flow_setpoint"},
     ROLE_DRY_FLOW: {"flow": "dry_flow", "setpoint": "dry_flow_setpoint"},
@@ -246,19 +246,38 @@ DEVICE_TYPES: Dict[str, DeviceType] = {
 
 # Columns the controller computes rather than reads. Each names the roles it
 # needs, so it is only logged/plotted when those roles are actually assigned.
+
+# Named so analysis tools can reference these columns symbolically instead of
+# re-typing the literals and silently finding nothing after a rename.
+COL_RH_PROBE_T = "rh_hygrometer"              # RH at the RH source's own temperature
+COL_RH_EXTERNAL_T = "rh_chiller"              # RH at the external probe temperature
+COL_RH_EXTERNAL_T_CALIBRATED = "rh_chiller_calibrated"
+
 DERIVED_SERIES: Tuple[Dict[str, Any], ...] = (
     # Only worth computing for a dew-point-only probe (the DewMaster). A probe
     # that reports RH directly (Vaisala) already gives this exact quantity on
     # its own `rh` channel — deriving it again from that probe's dew point and
     # temperature just draws the same curve twice.
-    {"column": "rh_hygrometer", "panel": PANEL_PERCENT,
+    {"column": COL_RH_PROBE_T, "panel": PANEL_PERCENT,
      "requires": (ROLE_RH_SOURCE,), "label": "RH (probe T)",
      "redundant_if_source_reports": "rh"},
-    {"column": "rh_chiller", "panel": PANEL_PERCENT,
+    {"column": COL_RH_EXTERNAL_T, "panel": PANEL_PERCENT,
      "requires": (ROLE_RH_SOURCE, ROLE_TEMP_SOURCE), "label": "RH (external T)"},
-    {"column": "rh_chiller_calibrated", "panel": PANEL_PERCENT,
+    {"column": COL_RH_EXTERNAL_T_CALIBRATED, "panel": PANEL_PERCENT,
      "requires": (ROLE_RH_SOURCE, ROLE_TEMP_SOURCE),
      "label": "RH (external T, calib.)"},
+)
+
+# Which RH reading is authoritative, most-preferred first. RH at the external
+# probe temperature wins because it reflects the sample environment; a probe
+# that reports RH directly is the last resort. Consumed by
+# Controller.current_rh (what the loop acts on).
+# COL_RH_EXTERNAL_T_CALIBRATED is deliberately absent: it already has
+# calibrated_RH() applied, so selecting it here would compose two calibrations.
+RH_PREFERENCE: Tuple[str, ...] = (
+    COL_RH_EXTERNAL_T,
+    COL_RH_PROBE_T,
+    ROLE_ALIASES[ROLE_RH_SOURCE]["rh"],
 )
 
 
@@ -426,7 +445,7 @@ def build_manifest(specs: List[dict]) -> List[Dict[str, Any]]:
                 "dashed": ch.dashed,
                 # All of a device's channels share one group, so a renderer can
                 # give them one colour and distinguish flow from setpoint by
-                # line style — see src/utility/series_style.py.
+                # line style — see _assign_styles() in plot_widget/plot_saver.
                 "group": spec["id"],
             })
 

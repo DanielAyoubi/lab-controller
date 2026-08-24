@@ -8,20 +8,98 @@ from PyQt6.QtWidgets import QWidget, QVBoxLayout
 from PyQt6.QtCore import Qt
 
 from src.devices.registry import PANELS
-from src.utility import series_style
 
 # Legend text: a touch larger than pyqtgraph's 9pt default, and bold, so it
 # stays readable sitting directly on the grid without a panel behind it.
 _LEGEND_TEXT_SIZE = "10pt"
 
-# series_style names line styles abstractly so the saved PNG can use the same
-# vocabulary; this maps them onto Qt's pen styles.
-_PEN_STYLES = {
-    "solid": Qt.PenStyle.SolidLine,
-    "dashdot": Qt.PenStyle.DashDotLine,
-    "dot": Qt.PenStyle.DotLine,
-    "dashed": Qt.PenStyle.DashLine,
-}
+# ── Series styling ───────────────────────────────────────────────────────────
+# Colour identifies the *device*, not the channel: every series a device
+# contributes shares its colour in every panel, so a setpoint reads as the twin
+# of its own measurement rather than an unrelated quantity. plot_saver.py holds
+# the same palette in Matplotlib's vocabulary so the saved PNG matches.
+
+# Colour-blind-friendly ordering: blue / orange / green / red first.
+_PALETTE = [
+    (31, 119, 180),   # blue
+    (255, 127, 14),   # orange
+    (44, 160, 44),    # green
+    (214, 39, 40),    # red
+    (148, 103, 189),  # purple
+    (23, 190, 207),   # cyan
+    (227, 119, 194),  # pink
+    (140, 86, 75),    # brown
+    (188, 189, 34),   # olive
+    (127, 127, 127),  # grey
+]
+
+# pyqtgraph symbol codes, chosen to stay legible at ~7 px.
+_SYMBOLS = ["o", "s", "t", "d", "p", "h", "star", "t1"]
+
+# Line styles for a device's *measurement* channels that land in the same panel
+# — a probe contributes both Temp and Dewpoint to the temperature panel, and
+# sharing the device colour would otherwise make them one indistinguishable
+# pair. DashLine is reserved: it always and only means a setpoint.
+_LINE_STYLES = [Qt.PenStyle.SolidLine, Qt.PenStyle.DashDotLine, Qt.PenStyle.DotLine]
+
+# A setpoint is usually *equal* to its measurement — an MFC sits on its
+# commanded flow — so drawing it in the same colour at the same width simply
+# hides it under the measurement. Instead it is a pale, wider halo *behind*:
+# where the two agree you see a soft band, where they diverge the halo pulls away.
+_WIDTH_MEASURED = 2.2
+_WIDTH_SETPOINT = 5.0
+_SETPOINT_TINT = 0.6     # how far to blend the device colour toward white
+_Z_MEASURED = 1
+_Z_SETPOINT = -1         # behind, so the measurement stays crisp on top
+
+# Roughly how many markers to draw along a trace: enough to identify the shape,
+# few enough that they never merge into a band and hide the line's colour.
+_MARKERS_PER_TRACE = 22
+_SYMBOL_SIZE = 7.0
+
+
+def _marker_stride(n_points: int) -> int:
+    """Draw a marker every Nth point so they never merge into a solid band."""
+    return max(1, n_points // _MARKERS_PER_TRACE)
+
+
+def _assign_styles(manifest):
+    """Map each manifest column to its pyqtgraph drawing style."""
+    groups = []
+    for entry in manifest:
+        group = entry.get("group") or entry["column"]
+        if group not in groups:
+            groups.append(group)
+
+    seen_in_panel = {}   # (group, panel) -> measurement traces so far
+    styles = {}
+    for entry in manifest:
+        group = entry.get("group") or entry["column"]
+        group_idx = groups.index(group)
+        rgb = _PALETTE[group_idx % len(_PALETTE)]
+        dashed = bool(entry.get("dashed"))
+
+        if dashed:
+            # A setpoint mirrors its measurement rather than being a channel in
+            # its own right, so it does not consume a line style.
+            channel_idx = 0
+            pen_style = Qt.PenStyle.DashLine
+            rgb = tuple(int(round(c + (255 - c) * _SETPOINT_TINT)) for c in rgb)
+        else:
+            key = (group, entry["panel"])
+            channel_idx = seen_in_panel.get(key, 0)
+            seen_in_panel[key] = channel_idx + 1
+            pen_style = _LINE_STYLES[channel_idx % len(_LINE_STYLES)]
+
+        styles[entry["column"]] = {
+            "rgb": rgb,
+            "symbol": _SYMBOLS[(group_idx + channel_idx) % len(_SYMBOLS)],
+            "dashed": dashed,
+            "pen_style": pen_style,
+            "width": _WIDTH_SETPOINT if dashed else _WIDTH_MEASURED,
+            "z": _Z_SETPOINT if dashed else _Z_MEASURED,
+        }
+    return styles
 
 
 class RealTimePlotWidget(QWidget):
@@ -102,7 +180,7 @@ class RealTimePlotWidget(QWidget):
 
         # One colour and marker shape per device, so a setpoint reads as the
         # dashed twin of its own measurement rather than a separate quantity.
-        self._styles = series_style.assign_styles(self.manifest)
+        self._styles = _assign_styles(self.manifest)
         for entry in self.manifest:
             panel = self._panels.get(entry["panel"])
             if panel is None:
@@ -142,9 +220,8 @@ class RealTimePlotWidget(QWidget):
         rgb = style["rgb"]
         item = plot.plot(
             [], [],
-            pen=pg.mkPen(rgb, width=style["width"],
-                         style=_PEN_STYLES[style["line_style"]]),
-            symbol=style["symbol"], symbolSize=series_style.SYMBOL_SIZE,
+            pen=pg.mkPen(rgb, width=style["width"], style=style["pen_style"]),
+            symbol=style["symbol"], symbolSize=_SYMBOL_SIZE,
             symbolBrush=rgb, symbolPen=pg.mkPen("w", width=0.5),
             name=label,
         )
@@ -155,7 +232,7 @@ class RealTimePlotWidget(QWidget):
     def _dashed_line(plot, style, label):
         """Setpoint: a pale, wide dashed halo drawn behind its measurement."""
         pen = pg.mkPen(style["rgb"], width=style["width"],
-                       style=Qt.PenStyle.DashLine)
+                       style=style["pen_style"])
         item = plot.plot([], [], pen=pen, name=label)
         item.setZValue(style["z"])
         return item
@@ -223,5 +300,5 @@ class RealTimePlotWidget(QWidget):
             # line's colour and its shape; a size of 0 skips a point without
             # removing the symbol from the item (so the legend still shows it).
             sizes = np.zeros(len(xs))
-            sizes[::series_style.marker_stride(len(xs))] = series_style.SYMBOL_SIZE
+            sizes[::_marker_stride(len(xs))] = _SYMBOL_SIZE
             line.setData(xs, ys, symbolSize=sizes)

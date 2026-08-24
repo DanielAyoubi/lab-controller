@@ -5,6 +5,11 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 
+# Filename prefix for automated-experiment logs. Shared so the calibration
+# tool looks for the same files run_automated_experiment() writes.
+RAMP_LOG_PREFIX = "RH_ramp"
+
+
 class DataLogger:
     def __init__(self, output_dir: str = "data", filename_prefix: str = "nsim_log"):
         self.output_dir = Path(output_dir)
@@ -88,10 +93,6 @@ class DataLogger:
 
     def get_current_filename(self) -> Optional[str]:
         return self.current_file
-
-    def list_log_files(self) -> List[str]:
-        pattern = f"{self.filename_prefix}_*.csv"
-        return sorted([str(f) for f in self.output_dir.glob(pattern)])
 
     def close(self):
         if self._file_handle:

@@ -137,22 +137,6 @@ class SettingsDialog(QDialog):
         # ── RH Feedforward + PI Controller ──────────────────────────────────
         layout.addRow(QLabel("── RH Feedforward + PI Controller ──"))
 
-        # Feedforward: wet_ratio = ff_gain·(target/100) + ff_offset.
-        # Physics gives gain≈1, offset≈0; calibrate per bubbler from a flow run.
-        self.rh_ff_gain = QDoubleSpinBox()
-        self.rh_ff_gain.setDecimals(3)
-        self.rh_ff_gain.setRange(0.1, 2.0)
-        self.rh_ff_gain.setSingleStep(0.01)
-        self.rh_ff_gain.setValue(self.config.get("rh_ff_gain", 1.0))
-        layout.addRow("Feedforward gain:", self.rh_ff_gain)
-
-        self.rh_ff_offset = QDoubleSpinBox()
-        self.rh_ff_offset.setDecimals(3)
-        self.rh_ff_offset.setRange(-0.5, 0.5)
-        self.rh_ff_offset.setSingleStep(0.01)
-        self.rh_ff_offset.setValue(self.config.get("rh_ff_offset", 0.0))
-        layout.addRow("Feedforward offset:", self.rh_ff_offset)
-
         self.rh_dead_time = QDoubleSpinBox()
         self.rh_dead_time.setDecimals(0)
         self.rh_dead_time.setRange(0.0, 300.0)
@@ -254,8 +238,6 @@ class SettingsDialog(QDialog):
             "experiment_rh_step": self.experiment_rh_step.value(),
             "experiment_hold_time": self.experiment_hold_time.value(),
             "max_flow": self.max_flow.value(),
-            "rh_ff_gain": self.rh_ff_gain.value(),
-            "rh_ff_offset": self.rh_ff_offset.value(),
             "rh_dead_time": self.rh_dead_time.value(),
             "rh_trim_limit": self.rh_trim_limit.value(),
             "rh_settling_time": self.rh_settling_time.value(),

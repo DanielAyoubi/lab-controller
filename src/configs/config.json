@@ -2,14 +2,6 @@
   "log_dir": "O:\\Nat_Chem-Aerosol-data\\People\\Daniel Ayoubi\\data",
   "log_prefix": "nsim_log",
   "max_plot_points": 500,
-
-  // The lab setup. Add/remove devices in Settings → Devices, or edit here.
-  //   type    one of: vogtlin_mfc, dewmaster_hygrometer, vaisala_rh,
-  //           julabo_chiller, firesting_o2   (see src/devices/registry.py)
-  //   tag     display name — plot legend, control panel labels
-  //   id      CSV column prefix; fixed at creation, never renamed
-  //   role    what the control loops use this device for. One holder each:
-  //           wet_flow, dry_flow, rh_source, temp_source, o2_source, none
   "devices": [
     {
       "id": "wet_mfc",
@@ -52,13 +44,11 @@
       "address": 23
     }
   ],
-
   "experiment_hold_time": 180.0,
   "max_flow": 2.0,
   "control_interval": 2000,
   "flow_ramp_step": 0.25,
   "flow_ramp_delay": 0.3,
-
   "experiment_rh_lower": 0.0,
   "experiment_rh_upper": 90.0,
   "experiment_stability_readings": 5,
@@ -68,9 +58,6 @@
   "experiment_flow_end": 0.0,
   "experiment_flow_step": 0.02,
   "experiment_rh_step": 5.0,
-
-  "rh_ff_gain": 1.0,
-  "rh_ff_offset": 0.0,
   "rh_dead_time": 25.0,
   "rh_trim_limit": 0.6,
   "rh_settling_time": 200.0,
