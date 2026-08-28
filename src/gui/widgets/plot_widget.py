@@ -119,13 +119,25 @@ class RealTimePlotWidget(QWidget):
         self._panels: Dict[str, pg.PlotItem] = {}
         self._legends: Dict[str, pg.LegendItem] = {}
         self._styles: Dict[str, Dict] = {}
+        # The panel every other panel's x-axis is linked to; see _setup_panels.
+        self._x_master: Optional[pg.PlotItem] = None
 
         self._setup_panels()
 
     # ── Layout ───────────────────────────────────────────────────────────────
 
     def _setup_panels(self):
-        """Create the three empty panels once; traces are added by configure()."""
+        """Create the three empty panels once; traces are added by configure().
+
+        The panels share one x-axis by linking the lower two to the first. That
+        link makes them *followers*: pyqtgraph switches x-autoranging off on a
+        linked view, so the shared range is whatever the first panel decides.
+        The first panel is Flows, which has no series at all on a rig with no
+        MFCs — so the range would stay at the default [0, 1] and every trace
+        would sit off-screen at x ≈ 1.8e9. ``_update_shared_x`` therefore drives
+        the range from the timestamps instead of leaving it to the master's
+        autorange; ``_x_master`` is the view it drives.
+        """
         first: Optional[pg.PlotItem] = None
         for row, (key, title, y_label) in enumerate(PANELS):
             plot = self.glw.addPlot(
@@ -150,6 +162,7 @@ class RealTimePlotWidget(QWidget):
             else:
                 plot.setXLink(first)   # shared x-axis across all three panels
             self._panels[key] = plot
+        self._x_master = first
         if PANELS:
             self._panels[PANELS[-1][0]].setLabel("bottom", "Time")
 
@@ -256,12 +269,39 @@ class RealTimePlotWidget(QWidget):
 
         self._redraw()
 
+    def _update_shared_x(self, time_data):
+        """Point the shared x-axis at the buffered time span.
+
+        Every panel plots against the same timestamps, so the range is known
+        rather than something to discover from whichever panel happens to hold
+        series — which is the whole problem with leaving it to the master's
+        autorange (see :meth:`_setup_panels`).
+
+        ``disableAutoRange=False`` keeps the master's autorange flag untouched,
+        which is what preserves the usual behaviour of a manual pan or zoom:
+        pyqtgraph clears that flag when the user drags the view, and this then
+        stops overriding them until autorange is switched back on.
+        """
+        master = self._x_master
+        if master is None or not master.vb.autoRangeEnabled()[0]:
+            return
+        # min/max rather than first/last: polls arrive in order, but a clock
+        # step backwards mid-run would otherwise invert the range and blank the
+        # plot — the exact failure this method exists to prevent.
+        lo, hi = float(time_data.min()), float(time_data.max())
+        if hi <= lo:
+            # A single sample has no span to show; give it a few seconds of
+            # context so the point lands mid-panel instead of on the edge.
+            lo, hi = lo - 5.0, lo + 5.0
+        master.vb.setRange(xRange=(lo, hi), padding=0.02, disableAutoRange=False)
+
     def _redraw(self):
         if len(self.timestamps) == 0:
             return
 
         # DateAxisItem expects POSIX seconds on the x-axis.
         time_data = np.array([t.timestamp() for t in self.timestamps], dtype=np.float64)
+        self._update_shared_x(time_data)
 
         for column, values in self._series.items():
             line = self._lines.get(column)
