@@ -158,3 +158,33 @@ class FireStingO2:
                     return buffer.decode("ascii", errors="ignore").strip()
             time.sleep(0.02)
         return None
+
+
+# ── Discovery ────────────────────────────────────────────────────────────────
+
+def probe_firesting(port, baudrate, addresses=(None,), timeout=None,
+                    should_stop=None, on_probe=None):
+    """``[None]`` if a FireSting answers on ``port``, else ``[]``.
+
+    ``connect()`` only checks that *something* CR-terminated came back, which
+    any chatty instrument would satisfy. A legacy FireSting echoes the command
+    it was given, so requiring "LOGO" in the reply is both cheap and specific.
+    Read-only: ``#LOGO`` is a no-op query, and no measurement is triggered.
+    """
+    device = FireStingO2(port, baudrate, timeout=0.5, name="FireSting scan",
+                         read_timeout=1.5)
+    ok = False
+    try:
+        if device.connect():
+            resp = device._send("#LOGO")
+            ok = bool(resp) and "LOGO" in resp.upper()
+    except Exception:
+        ok = False
+    finally:
+        try:
+            device.disconnect()
+        except Exception:
+            pass
+    if on_probe:
+        on_probe()
+    return [None] if ok else []

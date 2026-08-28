@@ -25,10 +25,12 @@ import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from src.devices.chillers import JulaboChiller
-from src.devices.mass_flow_controllers import VogtlinMFC
-from src.devices.O2_monitors import FireStingO2
-from src.devices.RH_probes import EdgeTechHygrometer, VaisalaRHProbe
+from src.devices.chillers import JulaboChiller, probe_julabo
+from src.devices.mass_flow_controllers import VogtlinMFC, scan as scan_vogtlin
+from src.devices.O2_monitors import FireStingO2, probe_firesting
+from src.devices.RH_probes import (
+    EdgeTechHygrometer, VaisalaRHProbe, probe_dewmaster, scan_vaisala,
+)
 
 # Keeps the Settings UI (and the poll loop) sane on a single serial host.
 MAX_PER_TYPE = 8
@@ -110,6 +112,46 @@ class Field:
     maximum: int = 0
 
 
+# Modbus RTU allows 1-247; both addressed types here can sit anywhere in it.
+MODBUS_ADDRESSES: Tuple[int, ...] = tuple(range(1, 248))
+
+
+@dataclass(frozen=True)
+class Discovery:
+    """How to recognise this type on a serial port nobody has labelled yet.
+
+    ``scan`` is the driver module's probe. They all share one signature —
+    ``(port, baudrate, addresses, timeout, should_stop, on_probe)`` returning
+    the addresses that answered — so the scanner treats an addressed Modbus
+    sweep and a one-shot ASCII handshake identically; an unaddressed type is
+    handed ``(None,)`` and answers ``[None]`` or ``[]``.
+
+    ``common`` is what a quick scan tries (the factory default, plus whatever
+    the user already has configured); ``full`` is the exhaustive sweep. Keeping
+    them apart is the difference between a 30-second scan and a 5-minute one.
+    """
+    scan: Callable[..., List[Optional[int]]]
+    baudrate: int
+    address_key: Optional[str] = None
+    common: Tuple[int, ...] = ()
+    full: Tuple[int, ...] = ()
+    seconds_per_probe: float = 0.1
+
+    def addresses(self, deep: bool, extra: Tuple[int, ...] = ()) -> Tuple[Optional[int], ...]:
+        """Addresses to try, most-likely first and de-duplicated."""
+        if self.address_key is None:
+            return (None,)
+        ordered = list(extra) + list(self.common)
+        if deep:
+            ordered += list(self.full)
+        seen, out = set(), []
+        for a in ordered:
+            if a not in seen:
+                seen.add(a)
+                out.append(a)
+        return tuple(out)
+
+
 @dataclass(frozen=True)
 class DeviceType:
     """A supported instrument.
@@ -134,6 +176,7 @@ class DeviceType:
     natural_role: Optional[str] = None
     allowed_roles: Tuple[str, ...] = ()
     caps: frozenset = field(default_factory=frozenset)
+    discovery: Optional[Discovery] = None
 
     @property
     def role_is_a_choice(self) -> bool:
@@ -152,7 +195,9 @@ class DeviceType:
         return {c.key for c in self.channels}
 
 
-_PORT = Field("port", "Port", "text", "COM1")
+# Rendered as a dropdown of the serial ports actually present, but still
+# free-text: a device may legitimately be unplugged while its card is edited.
+_PORT = Field("port", "Port", "port", "COM1")
 
 
 def _baud(default: int = 9600) -> Field:
@@ -177,6 +222,9 @@ DEVICE_TYPES: Dict[str, DeviceType] = {
                 Field("address", "Modbus address", "int", 1, 1, 247)),
         allowed_roles=(ROLE_NONE, ROLE_WET_FLOW, ROLE_DRY_FLOW),
         caps=frozenset({"flow_setpoint"}),
+        discovery=Discovery(scan=scan_vogtlin, baudrate=9600,
+                            address_key="address", common=(1,),
+                            full=MODBUS_ADDRESSES, seconds_per_probe=0.1),
     ),
     "dewmaster_hygrometer": DeviceType(
         key="dewmaster_hygrometer",
@@ -192,6 +240,8 @@ DEVICE_TYPES: Dict[str, DeviceType] = {
         ),
         fields=(_PORT, _baud(19200)),
         natural_role=ROLE_RH_SOURCE,
+        discovery=Discovery(scan=probe_dewmaster, baudrate=19200,
+                            seconds_per_probe=2.0),
     ),
     "vaisala_rh": DeviceType(
         key="vaisala_rh",
@@ -210,6 +260,9 @@ DEVICE_TYPES: Dict[str, DeviceType] = {
         fields=(_PORT, _baud(19200),
                 Field("address", "Modbus address", "int", 240, 1, 247)),
         natural_role=ROLE_RH_SOURCE,
+        discovery=Discovery(scan=scan_vaisala, baudrate=19200,
+                            address_key="address", common=(240,),
+                            full=MODBUS_ADDRESSES, seconds_per_probe=0.15),
     ),
     "julabo_chiller": DeviceType(
         key="julabo_chiller",
@@ -226,6 +279,8 @@ DEVICE_TYPES: Dict[str, DeviceType] = {
         fields=(_PORT, _baud(9600)),
         natural_role=ROLE_TEMP_SOURCE,
         caps=frozenset({"temp_setpoint"}),
+        discovery=Discovery(scan=probe_julabo, baudrate=9600,
+                            seconds_per_probe=0.8),
     ),
     "firesting_o2": DeviceType(
         key="firesting_o2",
@@ -238,6 +293,8 @@ DEVICE_TYPES: Dict[str, DeviceType] = {
         channels=(Channel("oxygen", "O₂", "%", PANEL_PERCENT),),
         fields=(_PORT, _baud(19200)),
         natural_role=ROLE_O2_SOURCE,
+        discovery=Discovery(scan=probe_firesting, baudrate=19200,
+                            seconds_per_probe=2.0),
     ),
 }
 
@@ -254,13 +311,14 @@ COL_RH_EXTERNAL_T = "rh_chiller"              # RH at the external probe tempera
 COL_RH_EXTERNAL_T_CALIBRATED = "rh_chiller_calibrated"
 
 DERIVED_SERIES: Tuple[Dict[str, Any], ...] = (
-    # Only worth computing for a dew-point-only probe (the DewMaster). A probe
-    # that reports RH directly (Vaisala) already gives this exact quantity on
-    # its own `rh` channel — deriving it again from that probe's dew point and
-    # temperature just draws the same curve twice.
+    # Computed for every RH source, including a probe that also reports RH
+    # directly. It is deliberately *not* suppressed as redundant for such a
+    # probe: it is the one series that exists whatever the RH source is, so it
+    # is what an analysis script and the operator's eye can rely on, and where
+    # the probe does report RH the two curves sitting on top of each other is
+    # a free consistency check on the probe's own dew-point output.
     {"column": COL_RH_PROBE_T, "panel": PANEL_PERCENT,
-     "requires": (ROLE_RH_SOURCE,), "label": "RH (probe T)",
-     "redundant_if_source_reports": "rh"},
+     "requires": (ROLE_RH_SOURCE,), "label": "RH (probe T)"},
     {"column": COL_RH_EXTERNAL_T, "panel": PANEL_PERCENT,
      "requires": (ROLE_RH_SOURCE, ROLE_TEMP_SOURCE), "label": "RH (external T)"},
     {"column": COL_RH_EXTERNAL_T_CALIBRATED, "panel": PANEL_PERCENT,
@@ -445,7 +503,7 @@ def build_manifest(specs: List[dict]) -> List[Dict[str, Any]]:
                 "dashed": ch.dashed,
                 # All of a device's channels share one group, so a renderer can
                 # give them one colour and distinguish flow from setpoint by
-                # line style — see _assign_styles() in plot_widget/plot_saver.
+                # line style — see _assign_styles() in plot_widget.py.
                 "group": spec["id"],
             })
 
@@ -456,11 +514,8 @@ def build_manifest(specs: List[dict]) -> List[Dict[str, Any]]:
     rh_src = holders[ROLE_RH_SOURCE]
     if rh_src is None:
         return manifest   # every derived series is computed from the RH source
-    rh_channels = require_type(rh_src).channel_keys()
     for d in DERIVED_SERIES:
         if any(holders.get(r) is None for r in d["requires"]):
-            continue
-        if d.get("redundant_if_source_reports") in rh_channels:
             continue
         manifest.append({
             "column": d["column"],

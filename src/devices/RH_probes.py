@@ -1,10 +1,24 @@
 import serial
 import time
+import math
 import re
 import struct
 import inspect
 
 from pymodbus.client import ModbusSerialClient
+
+def read_holding_registers_compat(client, address, count, slave):
+    """Call read_holding_registers regardless of pymodbus's kwarg naming for
+    the slave/unit id, which has changed across versions (unit -> slave ->
+    device_id)."""
+    params = inspect.signature(client.read_holding_registers).parameters
+    kwargs = {"address": address, "count": count}
+    for name in ("slave", "unit", "device_id"):
+        if name in params:
+            kwargs[name] = slave
+            break
+    return client.read_holding_registers(**kwargs)
+
 
 class EdgeTechHygrometer:
     def __init__(self, port: str, baudrate: int, timeout: float = 2.0, name: str = "Hygrometer",
@@ -158,6 +172,9 @@ class VaisalaRHProbe:
         self.name = name
         self.client = None
         self.connected = False
+        # Quantities already reported as unavailable, so the warning is printed
+        # once per probe rather than on every poll.
+        self._unavailable: set = set()
 
     def __enter__(self):
         self.connect()
@@ -207,7 +224,15 @@ class VaisalaRHProbe:
         return self.connected
 
     def read(self):
-        """One poll, keyed by the channel keys declared in the registry."""
+        """One poll, keyed by the channel keys declared in the registry.
+
+        A register the probe cannot currently populate reads back as a float
+        NaN rather than as an error, so each quantity is reported as None
+        instead — a NaN would otherwise travel all the way to the CSV column
+        and the plot, where it looks like a reading that simply never draws.
+        The first time a quantity does this it is printed once, because the
+        usual cause is a probe model that does not compute it at all.
+        """
         if self.client is None:
             return None
         try:
@@ -215,7 +240,18 @@ class VaisalaRHProbe:
         except Exception as e:
             print(f"Error reading {self.name}: {e}")
             return None
-        return {"rh": rh, "temp": t, "dewpoint": dp}
+        return {key: self._usable(key, value) for key, value in
+                (("rh", rh), ("temp", t), ("dewpoint", dp))}
+
+    def _usable(self, key: str, value: float):
+        """``value`` unless the probe reported it as unavailable (NaN)."""
+        if value is not None and math.isfinite(value):
+            return value
+        if key not in self._unavailable:
+            self._unavailable.add(key)
+            print(f"{self.name}: {key} reads as unavailable (NaN) — the probe "
+                  f"is not producing that quantity on its Modbus registers.")
+        return None
 
     def regs_to_float(self, registers: list[int], hi_idx: int) -> float:
         """HMP110 stores 32-bit floats as two 16-bit regs, little-endian word order."""
@@ -224,17 +260,9 @@ class VaisalaRHProbe:
 
 
     def read_holding_registers_compat(self, client, address, count, slave):
-        """Call read_holding_registers regardless of pymodbus's kwarg naming
-        for the slave/unit id, which has changed across versions (unit -> slave
-        -> device_id)."""
-        sig = inspect.signature(client.read_holding_registers)
-        params = sig.parameters
-        kwargs = {"address": address, "count": count}
-        for name in ("slave", "unit", "device_id"):
-            if name in params:
-                kwargs[name] = slave
-                break
-        return client.read_holding_registers(**kwargs)
+        """See :func:`read_holding_registers_compat`. Kept as a method because
+        notebooks call it through a probe instance."""
+        return read_holding_registers_compat(client, address, count, slave)
 
 
     def read_measurements(self):
@@ -247,3 +275,59 @@ class VaisalaRHProbe:
         dp = self.regs_to_float(regs, 9)   # dew point [°C]
         return rh, t, dp
 
+
+
+# ── Discovery ────────────────────────────────────────────────────────────────
+SCAN_TIMEOUT = 0.15
+
+
+def scan_vaisala(port, baudrate, addresses, timeout=SCAN_TIMEOUT,
+                 should_stop=None, on_probe=None):
+    found = []
+    client = ModbusSerialClient(
+        port=port, timeout=timeout, baudrate=baudrate,
+        bytesize=8, stopbits=2, parity="N", retries=0,
+    )
+    if not client.connect():
+        print(f"Vaisala scan: cannot open {port}")
+        if on_probe:
+            for _ in addresses:
+                on_probe()
+        return found
+
+    try:
+        for addr in addresses:
+            if should_stop and should_stop():
+                break
+            try:
+                rr = read_holding_registers_compat(client, 0, 10, addr)
+                if not rr.isError():
+                    found.append(addr)
+            except Exception:
+                pass
+            if on_probe:
+                on_probe()
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
+    return found
+
+
+def probe_dewmaster(port, baudrate, addresses=(None,), timeout=None,
+                    should_stop=None, on_probe=None):
+    device = EdgeTechHygrometer(port, baudrate, timeout=0.5, name="DewMaster scan",
+                                read_timeout=1.5, nudge_interval=0.4)
+    try:
+        ok = bool(device.connect())
+    except Exception:
+        ok = False
+    finally:
+        try:
+            device.disconnect()
+        except Exception:
+            pass
+    if on_probe:
+        on_probe()
+    return [None] if ok else []

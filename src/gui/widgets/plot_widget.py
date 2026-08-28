@@ -55,40 +55,38 @@ def _marker_stride(n_points: int) -> int:
 
 
 def _assign_styles(manifest):
-    """Map each manifest column to its pyqtgraph drawing style."""
-    groups = []
-    for entry in manifest:
-        group = entry.get("group") or entry["column"]
-        if group not in groups:
-            groups.append(group)
+    """Map each manifest column to its pyqtgraph drawing style.
 
+    Only ``rgb`` and ``dashed`` are common to both kinds of trace; a setpoint is
+    drawn entirely by ``_dashed_line``, so it carries no line style or marker.
+    Width and z-order live with the pen that uses them.
+    """
+    group_index = {}     # group -> palette slot, in first-appearance order
     seen_in_panel = {}   # (group, panel) -> measurement traces so far
     styles = {}
     for entry in manifest:
         group = entry.get("group") or entry["column"]
-        group_idx = groups.index(group)
+        group_idx = group_index.setdefault(group, len(group_index))
         rgb = _PALETTE[group_idx % len(_PALETTE)]
         dashed = bool(entry.get("dashed"))
 
         if dashed:
             # A setpoint mirrors its measurement rather than being a channel in
-            # its own right, so it does not consume a line style.
-            channel_idx = 0
-            pen_style = Qt.PenStyle.DashLine
-            rgb = tuple(int(round(c + (255 - c) * _SETPOINT_TINT)) for c in rgb)
-        else:
-            key = (group, entry["panel"])
-            channel_idx = seen_in_panel.get(key, 0)
-            seen_in_panel[key] = channel_idx + 1
-            pen_style = _LINE_STYLES[channel_idx % len(_LINE_STYLES)]
+            # its own right, so it consumes neither a line style nor a marker.
+            styles[entry["column"]] = {
+                "rgb": tuple(int(round(c + (255 - c) * _SETPOINT_TINT)) for c in rgb),
+                "dashed": True,
+            }
+            continue
 
+        key = (group, entry["panel"])
+        channel_idx = seen_in_panel.get(key, 0)
+        seen_in_panel[key] = channel_idx + 1
         styles[entry["column"]] = {
             "rgb": rgb,
+            "dashed": False,
+            "pen_style": _LINE_STYLES[channel_idx % len(_LINE_STYLES)],
             "symbol": _SYMBOLS[(group_idx + channel_idx) % len(_SYMBOLS)],
-            "dashed": dashed,
-            "pen_style": pen_style,
-            "width": _WIDTH_SETPOINT if dashed else _WIDTH_MEASURED,
-            "z": _Z_SETPOINT if dashed else _Z_MEASURED,
         }
     return styles
 
@@ -98,7 +96,7 @@ class RealTimePlotWidget(QWidget):
 
     The widget knows nothing about specific devices. It is driven by a *series
     manifest* (see ``registry.build_manifest``): a list of
-    ``{column, label, panel, dashed}`` entries produced from the configured
+    ``{column, label, panel, group, dashed}`` entries produced from the configured
     device set. ``configure()`` rebuilds the traces whenever that set changes,
     which is what puts each device's tag into the legend.
     """
@@ -169,8 +167,6 @@ class RealTimePlotWidget(QWidget):
         self._series.clear()
         self.timestamps.clear()
 
-        # One colour and marker shape per device, so a setpoint reads as the
-        # dashed twin of its own measurement rather than a separate quantity.
         self._styles = _assign_styles(self.manifest)
         for entry in self.manifest:
             panel = self._panels.get(entry["panel"])
@@ -211,21 +207,21 @@ class RealTimePlotWidget(QWidget):
         rgb = style["rgb"]
         item = plot.plot(
             [], [],
-            pen=pg.mkPen(rgb, width=style["width"], style=style["pen_style"]),
+            pen=pg.mkPen(rgb, width=_WIDTH_MEASURED, style=style["pen_style"]),
             symbol=style["symbol"], symbolSize=_SYMBOL_SIZE,
             symbolBrush=rgb, symbolPen=pg.mkPen("w", width=0.5),
             name=label,
         )
-        item.setZValue(style["z"])
+        item.setZValue(_Z_MEASURED)
         return item
 
     @staticmethod
     def _dashed_line(plot, style, label):
         """Setpoint: a pale, wide dashed halo drawn behind its measurement."""
-        pen = pg.mkPen(style["rgb"], width=style["width"],
-                       style=style["pen_style"])
+        pen = pg.mkPen(style["rgb"], width=_WIDTH_SETPOINT,
+                       style=Qt.PenStyle.DashLine)
         item = plot.plot([], [], pen=pen, name=label)
-        item.setZValue(style["z"])
+        item.setZValue(_Z_SETPOINT)
         return item
 
     # ── Data ─────────────────────────────────────────────────────────────────
@@ -281,8 +277,7 @@ class RealTimePlotWidget(QWidget):
                 continue
 
             xs, ys = time_data[:n][mask], y_data[:n][mask]
-            style = self._styles.get(column, {})
-            if style.get("dashed", True):
+            if self._styles[column]["dashed"]:
                 line.setData(xs, ys)
                 continue
 

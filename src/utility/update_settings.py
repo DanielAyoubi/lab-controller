@@ -7,8 +7,8 @@ def default_config_path() -> Path:
     return Path(__file__).resolve().parents[1] / "configs" / "config.json"
 
 
-def apply_settings(config: dict, new_config: dict, logger, pid) -> None:
-    config.update(new_config)
+def apply_settings(config: dict, logger, pid) -> None:
+    """Push the (already merged) config into the logger and PID controller."""
     logger.output_dir = Path(config.get("log_dir", "data"))
     logger.filename_prefix = config.get("log_prefix", "nsim_log")
     logger.output_dir.mkdir(parents=True, exist_ok=True)

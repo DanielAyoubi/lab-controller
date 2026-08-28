@@ -14,13 +14,30 @@ from PyQt6.QtWidgets import (
     QMessageBox, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from src.devices import registry as reg
+from src.devices import discovery, registry as reg
+from src.gui.widgets.discovery_dialog import DiscoveryDialog
+
+
+def _port_value(combo: QComboBox) -> str:
+    """The bare port name behind a port combo.
+
+    Detected ports are listed as "COM23 — USB Serial Port" so the user can tell
+    one cable from another, but the spec must hold just "COM23". A picked entry
+    carries the port name as its item data; anything typed by hand is taken as
+    written, minus any description the user pasted along with it.
+    """
+    text = combo.currentText().strip()
+    index = combo.findText(text)
+    if index >= 0:
+        return combo.itemData(index) or text
+    return text.split("—")[0].strip()
 
 
 class DeviceCard(QFrame):
     """Editor for a single device spec."""
 
-    def __init__(self, spec: dict, on_remove, on_role_changed, parent=None):
+    def __init__(self, spec: dict, on_remove, on_role_changed, ports=None,
+                 parent=None):
         super().__init__(parent)
         self.spec = dict(spec)
         self.dtype = reg.DEVICE_TYPES[self.spec["type"]]
@@ -101,6 +118,15 @@ class DeviceCard(QFrame):
                 widget = QSpinBox()
                 widget.setRange(field.minimum, field.maximum)
                 widget.setValue(int(value))
+            elif field.kind == "port":
+                widget = QComboBox()
+                widget.setEditable(True)
+                widget.setToolTip(
+                    "Pick a detected port, or type one if the device is "
+                    "currently unplugged.\n"
+                    "Use “Detect devices” below to find it automatically."
+                )
+                self._fill_ports(widget, ports or [], str(value))
             else:
                 widget = QLineEdit(str(value))
             self.field_widgets[field.key] = widget
@@ -138,6 +164,51 @@ class DeviceCard(QFrame):
             self.combo_role.setCurrentIndex(idx)
             self.combo_role.blockSignals(False)
 
+    @staticmethod
+    def _fill_ports(combo: QComboBox, ports, current: str):
+        """List the detected ports, keeping whatever the spec already holds.
+
+        A configured port that is not currently present is added anyway — an
+        unplugged instrument must not silently lose its port when the dialog
+        is opened.
+        """
+        combo.blockSignals(True)
+        combo.clear()
+        names = []
+        for port in ports:
+            combo.addItem(port.label, port.device)
+            names.append(port.device)
+        if current and current not in names:
+            combo.addItem(current, current)
+        index = combo.findData(current) if current else -1
+        if index >= 0:
+            combo.setCurrentIndex(index)
+        else:
+            combo.setCurrentText(current or "")
+        combo.blockSignals(False)
+
+    def refresh_ports(self, ports):
+        """Re-list the detected ports without disturbing the current choice."""
+        for field in self.dtype.fields:
+            if field.kind != "port":
+                continue
+            combo = self.field_widgets.get(field.key)
+            if isinstance(combo, QComboBox):
+                self._fill_ports(combo, ports, _port_value(combo))
+
+    def set_connection(self, updates: dict):
+        """Fill in connection fields discovered by a scan."""
+        for key, value in updates.items():
+            widget = self.field_widgets.get(key)
+            if isinstance(widget, QSpinBox):
+                widget.setValue(int(value))
+            elif isinstance(widget, QComboBox):
+                index = widget.findData(str(value))
+                widget.setCurrentText(widget.itemText(index) if index >= 0
+                                      else str(value))
+            elif isinstance(widget, QLineEdit):
+                widget.setText(str(value))
+
     def to_spec(self) -> dict:
         spec = dict(self.spec)
         spec.update({
@@ -148,6 +219,8 @@ class DeviceCard(QFrame):
         for key, widget in self.field_widgets.items():
             if isinstance(widget, QSpinBox):
                 spec[key] = widget.value()
+            elif isinstance(widget, QComboBox):
+                spec[key] = _port_value(widget)
             elif isinstance(widget, QLineEdit):
                 spec[key] = widget.text().strip()
         return spec
@@ -156,9 +229,13 @@ class DeviceCard(QFrame):
 class DeviceListEditor(QWidget):
     """Scrollable list of device cards plus the add-device row."""
 
-    def __init__(self, devices: List[dict], parent=None):
+    def __init__(self, devices: List[dict], busy_ports=None, parent=None):
         super().__init__(parent)
         self.cards: List[DeviceCard] = []
+        # Ports held open by a live driver: a scan must not try to reopen them,
+        # and on Windows it could not anyway.
+        self.busy_ports = list(busy_ports or [])
+        self.ports = discovery.list_serial_ports()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -167,7 +244,9 @@ class DeviceListEditor(QWidget):
             "Each device needs a port and a tag — the tag is what labels it in "
             "the plot and the controls. Probes, chillers and O₂ meters take "
             "their role automatically; only the MFCs need telling which is the "
-            "<b>wet</b> and which the <b>dry</b> line."
+            "<b>wet</b> and which the <b>dry</b> line.<br>"
+            "Not sure of a port or a Modbus address? Use <b>Detect devices</b> "
+            "to find them."
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #555555; font-size: 11px;")
@@ -195,6 +274,14 @@ class DeviceListEditor(QWidget):
         add_row.addWidget(btn_add)
         layout.addLayout(add_row)
 
+        btn_detect = QPushButton("Detect devices…")
+        btn_detect.setToolTip(
+            "Scan the serial ports and fill in the ports, baudrates and "
+            "Modbus addresses of whatever answers."
+        )
+        btn_detect.clicked.connect(self.detect_devices)
+        layout.addWidget(btn_detect)
+
         for spec in devices or []:
             if spec.get("type") in reg.DEVICE_TYPES:
                 self._add_card(spec)
@@ -202,7 +289,8 @@ class DeviceListEditor(QWidget):
     # ── Cards ────────────────────────────────────────────────────────────────
 
     def _add_card(self, spec: dict):
-        card = DeviceCard(spec, self._remove_card, self._enforce_unique_role)
+        card = DeviceCard(spec, self._remove_card, self._enforce_unique_role,
+                          ports=self.ports)
         self.cards.append(card)
         # Insert before the trailing stretch so cards stay top-aligned.
         self._card_layout.insertWidget(self._card_layout.count() - 1, card)
@@ -213,17 +301,16 @@ class DeviceListEditor(QWidget):
         card.setParent(None)
         card.deleteLater()
 
-    def _add_from_combo(self):
-        type_key = self.combo_new_type.currentData()
+    def _new_spec(self, type_key: str) -> Optional[dict]:
+        """A fresh spec for one more device of ``type_key``, or None if full."""
         dtype = reg.DEVICE_TYPES[type_key]
-
         same_type = [c for c in self.cards if c.spec["type"] == type_key]
         if len(same_type) >= reg.MAX_PER_TYPE:
             QMessageBox.warning(
                 self, "Too many devices",
                 f"At most {reg.MAX_PER_TYPE} × {dtype.label} are supported.",
             )
-            return
+            return None
 
         tag = dtype.label if not same_type else f"{dtype.label} {len(same_type) + 1}"
         taken = [c.spec["id"] for c in self.cards]
@@ -237,7 +324,89 @@ class DeviceListEditor(QWidget):
             "enabled": True,
         }
         spec.update(dtype.defaults())
-        self._add_card(spec)
+        return spec
+
+    def _add_from_combo(self):
+        spec = self._new_spec(self.combo_new_type.currentData())
+        if spec is not None:
+            self._add_card(spec)
+
+    # ── Detection ────────────────────────────────────────────────────────────
+
+    def detect_devices(self):
+        """Scan the serial ports and fold what answers into the card list."""
+        dialog = DiscoveryDialog(self.get_devices(), self.busy_ports, self)
+        accepted = dialog.exec()
+
+        # Cables may have been plugged or pulled while the dialog was open, and
+        # the scan is the most recent word on what is out there either way.
+        self.ports = discovery.list_serial_ports()
+        for card in self.cards:
+            card.refresh_ports(self.ports)
+
+        if accepted:
+            self._apply_discovered(dialog.selected_devices())
+
+    def _adoptable(self, found) -> Optional[DeviceCard]:
+        """The card that is almost certainly ``found`` under a new COM number.
+
+        Windows renumbers COM ports when adapters are moved between USB sockets,
+        which silently breaks a working config. If a card of the same type has
+        the same Modbus address but points at a port that no longer exists, it
+        is the same instrument and should be re-pointed rather than duplicated.
+        Only an unambiguous single candidate is adopted — with two identical
+        stale MFCs there is no way to tell which is which, so both are left for
+        the user to sort out.
+        """
+        present = {p.device for p in self.ports}
+        address_key = reg.DEVICE_TYPES[found.type_key].discovery.address_key
+        candidates = []
+        for card in self.cards:
+            spec = card.to_spec()
+            if spec.get("type") != found.type_key:
+                continue
+            if spec.get("port") in present:
+                continue    # its port still exists, so it is not a stale entry
+            if address_key is not None:
+                try:
+                    if int(spec.get(address_key, -1)) != found.address:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+            candidates.append(card)
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _apply_discovered(self, found: List):
+        added, adopted = [], []
+        for item in found:
+            if any(item.matches(card.to_spec()) for card in self.cards):
+                continue
+            card = self._adoptable(item)
+            if card is not None:
+                card.set_connection(item.spec_updates())
+                adopted.append(f"{card.to_spec().get('tag')} → {item.port}")
+                continue
+            spec = self._new_spec(item.type_key)
+            if spec is None:
+                continue
+            spec.update(item.spec_updates())
+            self._add_card(spec)
+            added.append(item.label)
+
+        if not added and not adopted:
+            QMessageBox.information(
+                self, "Nothing to add",
+                "Every selected device is already in the list.")
+            return
+
+        lines = []
+        if added:
+            lines.append("Added:\n  " + "\n  ".join(added))
+        if adopted:
+            lines.append("Moved to a new port:\n  " + "\n  ".join(adopted))
+        lines.append("Give the new devices a tag, and set which MFC is wet and "
+                     "which is dry, before saving.")
+        QMessageBox.information(self, "Devices detected", "\n\n".join(lines))
 
     def _enforce_unique_role(self, changed: DeviceCard):
         """A role belongs to one device — claiming it releases the previous holder."""

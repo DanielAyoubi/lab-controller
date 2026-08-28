@@ -8,11 +8,14 @@ from src.gui.widgets.device_editor import DeviceListEditor
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, config: dict, parent=None):
+    def __init__(self, config: dict, parent=None, busy_ports=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.resize(600, 400)
         self.config = config
+        # Ports a live driver currently holds open. Device detection must leave
+        # them alone; everything else in here is safe to edit while connected.
+        self.busy_ports = list(busy_ports or [])
 
         layout = QVBoxLayout(self)
         
@@ -80,7 +83,8 @@ class SettingsDialog(QDialog):
 
     def _create_devices_tab(self):
         """Device list editor — see src/gui/widgets/device_editor.py."""
-        self.device_editor = DeviceListEditor(self.config.get("devices", []))
+        self.device_editor = DeviceListEditor(self.config.get("devices", []),
+                                             busy_ports=self.busy_ports)
         self.tabs.addTab(self.device_editor, "Devices")
 
     def _create_experiment_tab(self):

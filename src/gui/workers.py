@@ -3,6 +3,8 @@ import time
 from PyQt6.QtCore import QThread, pyqtSignal
 from typing import Dict, Any
 
+from src.devices import discovery
+
 
 class PollWorker(QThread):
     """Polls sensors on a background thread"""
@@ -104,3 +106,39 @@ class ExperimentWorker(QThread):
 
     def stop(self):
         self.controller.running = False
+
+
+class DiscoveryWorker(QThread):
+    """Runs a device scan off the GUI thread.
+
+    Thin wrapper over :func:`src.devices.discovery.run` — all the probing logic
+    lives there so it stays testable without a Qt event loop. Stop is signalled
+    the same way the other workers do it, by setting a flag the running scan
+    polls between probes.
+    """
+    progress = pyqtSignal(int, str)
+    found = pyqtSignal(object)
+    scan_finished = pyqtSignal(list)
+
+    def __init__(self, scan_plan, skip_ports=()):
+        super().__init__()
+        self.plan = scan_plan
+        self.skip_ports = list(skip_ports)
+        self._stop = False
+
+    def run(self):
+        try:
+            results = discovery.run(
+                self.plan,
+                on_found=self.found.emit,
+                on_progress=lambda done, msg: self.progress.emit(done, msg),
+                should_stop=lambda: self._stop,
+                skip_ports=self.skip_ports,
+            )
+        except Exception as e:
+            print(f"DiscoveryWorker error: {e}")
+            results = []
+        self.scan_finished.emit(results)
+
+    def stop(self):
+        self._stop = True

@@ -158,3 +158,24 @@ class JulaboChiller:
 
     def close(self):
         self.disconnect()
+
+
+# ── Discovery ────────────────────────────────────────────────────────────────
+
+def probe_julabo(port, baudrate, addresses=(None,), timeout=None,
+                 should_stop=None, on_probe=None):
+    device = JulaboChiller(port, baudrate, timeout=0.5, name="Julabo scan")
+    ok = False
+    try:
+        if device.connect():
+            ok = device.get_setpoint_temperature() is not None
+    except Exception:
+        ok = False
+    finally:
+        try:
+            device.disconnect()
+        except Exception:
+            pass
+    if on_probe:
+        on_probe()
+    return [None] if ok else []

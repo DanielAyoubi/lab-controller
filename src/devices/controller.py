@@ -1,3 +1,4 @@
+import math
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -8,6 +9,26 @@ from src.devices.pid_controller import RhPidController
 from src.utility.data_logger import DataLogger, RAMP_LOG_PREFIX
 from src.utility.plot_saver import save_experiment_plot
 from src.utility.compute_RH import compute_relative_humidity, calibrated_RH
+
+
+def _finite(value) -> Optional[float]:
+    """``value`` as a float when it is a real number, else None.
+
+    Serial instruments signal "this quantity is not available" in two different
+    ways: no key in the reading at all, or a NaN float (the Vaisala Modbus map
+    returns NaN for a quantity the probe cannot currently produce). Downstream
+    only handles the first — None means "leave the column empty" — while a NaN
+    propagates silently through the RH maths and ends up as a column that looks
+    populated but plots as nothing. Collapsing both to None keeps the two
+    indistinguishable, which is what every caller already assumes.
+    """
+    if value is None or isinstance(value, str):
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
 
 
 @dataclass
@@ -244,6 +265,11 @@ class Controller:
                 self.device_health[dev_id] = False
                 continue
 
+            # A quantity the device cannot currently produce comes back as NaN
+            # from some drivers and as None from others; normalise here so the
+            # health check below and every consumer of `data` see one form.
+            readings = {k: _finite(v) for k, v in (readings or {}).items()}
+
             # Port open but nothing came back — device powered off / unplugged.
             if not readings or all(v is None for v in readings.values()):
                 self.device_health[dev_id] = False
@@ -267,7 +293,7 @@ class Controller:
         tool fits the feedforward against the same reading the loop acts on.
         """
         for key in reg.RH_PREFERENCE:
-            value = data.get(key)
+            value = _finite(data.get(key))
             if value is not None:
                 return value
         return None
@@ -277,19 +303,26 @@ class Controller:
         """Fill the computed RH columns from the role-holders' readings.
 
         Works off the legacy alias columns, so it is indifferent to which
-        physical probe is assigned the RH / temperature source roles.
+        physical probe is assigned the RH / temperature source roles. Every
+        input goes through :func:`_finite` first: a probe that cannot produce a
+        quantity reports it as NaN, and a NaN dew point would otherwise turn
+        into a NaN RH column that logs and plots as an invisible gap rather
+        than as the missing reading it is.
         """
-        dp = data.get("dewpoint_temp")
+        dp = _finite(data.get("dewpoint_temp"))
         if dp is None:
             return
-        # Skipped when the probe reports RH directly (rh_probe): deriving it
-        # again from that probe's own dew point and temperature would duplicate
-        # the reading. Kept in step with registry.DERIVED_SERIES, which drops
-        # the column and its trace in the same case.
-        if data.get("hygrometer_temp") is not None and data.get("rh_probe") is None:
-            data["rh_hygrometer"] = compute_relative_humidity(dp=dp, t=data["hygrometer_temp"])
-        if data.get("chiller_temp") is not None:
-            data["rh_chiller"] = compute_relative_humidity(dp=dp, t=data["chiller_temp"])
+        # Derived from the RH source's *own* temperature, for every kind of RH
+        # source. A probe that also reports RH directly (a Vaisala) publishes
+        # the same quantity on its `rh` channel, so the two curves coincide —
+        # that agreement is the point: it is a live check on the probe's
+        # dew-point output, and it keeps rh_hygrometer present in every rig.
+        probe_t = _finite(data.get("hygrometer_temp"))
+        if probe_t is not None:
+            data["rh_hygrometer"] = compute_relative_humidity(dp=dp, t=probe_t)
+        external_t = _finite(data.get("chiller_temp"))
+        if external_t is not None:
+            data["rh_chiller"] = compute_relative_humidity(dp=dp, t=external_t)
             data["rh_chiller_calibrated"] = calibrated_RH(data["rh_chiller"])
 
     def read_and_log(self, on_data: Optional[Callable[[Dict], None]] = None) -> Dict:

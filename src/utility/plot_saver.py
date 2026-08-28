@@ -1,4 +1,5 @@
 from datetime import datetime
+from math import isfinite
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -27,10 +28,17 @@ def save_experiment_plot(
         return None
 
     def _to_float(v):
+        """A real number, or None for anything unplottable.
+
+        A NaN in the log (a probe reporting a quantity it cannot produce) has to
+        collapse to None like a blank cell does: kept as a float it counts as a
+        value, so the column earns a legend entry with no line behind it.
+        """
         try:
-            return float(v)
+            f = float(v)
         except (TypeError, ValueError):
             return None
+        return f if isfinite(f) else None
 
     timestamps = []
     columns: Dict[str, list] = {e["column"]: [] for e in manifest}

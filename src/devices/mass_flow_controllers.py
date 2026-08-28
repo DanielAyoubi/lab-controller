@@ -1,5 +1,6 @@
 from typing import Optional
 import minimalmodbus
+import serial
 import struct
 import time
 
@@ -116,11 +117,6 @@ class VogtlinMFC:
             return False
 
     def read(self) -> dict:
-        """One poll, keyed by the channel keys declared in the registry.
-
-        Modbus errors propagate — the controller flags the device unhealthy and
-        retries the connection on its own throttle.
-        """
         return {"flow": self.get_flow(), "setpoint": self.get_setpoint()}
 
     def get_status(self) -> dict:
@@ -130,3 +126,54 @@ class VogtlinMFC:
             "temperature": self.get_temperature(),
             "valve_signal": self.get_valve_signal(),
         }
+
+
+# ── Discovery ────────────────────────────────────────────────────────────────
+
+# Time to wait for a reply while sweeping addresses. A Vogtlin answers a
+# 2-register read in well under 20 ms at 9600 baud, but a USB-serial adapter
+# adds its own latency (FTDI ships with a 16 ms latency timer), so anything
+# below ~50 ms starts missing live devices. Only *silent* addresses cost the
+# full timeout — minimalmodbus reads a known number of bytes and returns as
+# soon as they arrive — so a hit is cheap and a miss is the 0.1 s.
+SCAN_TIMEOUT = 0.1
+
+
+def scan(port, baudrate, addresses, timeout=SCAN_TIMEOUT,
+         should_stop=None, on_probe=None):
+    found = []
+    ser = None
+    try:
+        ser = serial.Serial(port=port, baudrate=baudrate, bytesize=8,
+                            parity=serial.PARITY_NONE, stopbits=1,
+                            timeout=timeout, write_timeout=2.0)
+    except Exception as e:
+        print(f"MFC scan: cannot open {port}: {e}")
+        # Still report the skipped work so the progress bar stays truthful.
+        if on_probe:
+            for _ in addresses:
+                on_probe()
+        return found
+
+    try:
+        instrument = minimalmodbus.Instrument(ser, 1, mode=minimalmodbus.MODE_RTU)
+        for addr in addresses:
+            if should_stop and should_stop():
+                break
+            instrument.address = addr
+            try:
+                regs = instrument.read_registers(VogtlinMFC.REG["flow"], 2)
+                # A reply that decodes as a float is the confirmation — a bare
+                # ACK could come from any Modbus slave on a shared bus.
+                struct.unpack(">f", struct.pack(">HH", *regs))
+                found.append(addr)
+            except Exception:
+                pass
+            if on_probe:
+                on_probe()
+    finally:
+        try:
+            ser.close()
+        except Exception:
+            pass
+    return found

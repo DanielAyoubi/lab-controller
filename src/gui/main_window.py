@@ -1,4 +1,3 @@
-import os
 import json
 from typing import Optional
 
@@ -37,7 +36,6 @@ class MainWindow(QMainWindow):
         self.resize(1200, 800)
 
         # Load Config
-        self.config_path: Optional[str] = None
         self.config = self.load_config()
         
         # Initialize Controller
@@ -57,21 +55,19 @@ class MainWindow(QMainWindow):
         self._create_right_panel()
 
 
-    def load_config(self, config_path: Optional[str] = None) -> dict:
+    def load_config(self) -> dict:
         """Load the machine-specific JSON config.
 
-        The path is resolved relative to this module, so the app runs from any
-        working directory.
+        ``default_config_path()`` resolves it relative to the source tree, so the
+        app runs from any working directory.
         """
-        path = str(config_path or default_config_path())
-        if not os.path.exists(path):
+        path = default_config_path()
+        if not path.exists():
             raise FileNotFoundError(
                 f"Config file not found: {path}. "
                 "Expected a config.json in src/configs/."
             )
-        self.config_path = path
-        with open(path, "r", encoding="utf-8") as f:
-            config = json.load(f)
+        config = json.loads(path.read_text(encoding="utf-8"))
         # A hand-edited file may leave an implied role unassigned.
         reg.assign_default_roles(config.get("devices", []))
         return config
@@ -92,8 +88,19 @@ class MainWindow(QMainWindow):
             self.poll_worker.wait()
         self.poll_worker = None
 
+    def _busy_ports(self) -> list:
+        """Ports held open by a connected driver.
+
+        Device detection reopens ports to probe them, which it must not do to
+        one that is already in use — so those are excluded from a scan.
+        """
+        if not self.controller.is_connected():
+            return []
+        return sorted({inst.spec.get("port") for inst in self.controller.devices.values()
+                       if inst.spec.get("port")})
+
     def open_settings(self):
-        dialog = SettingsDialog(self.config, self)
+        dialog = SettingsDialog(self.config, self, busy_ports=self._busy_ports())
         if not dialog.exec():
             return
 
@@ -143,9 +150,9 @@ class MainWindow(QMainWindow):
         Returns the path written, or None on failure.
         """
         try:
-            dest = self.config_path or str(default_config_path())
+            dest = default_config_path()
             save_config_to_file(self.config, dest)
-            return dest
+            return str(dest)
         except Exception as e:
             print(f"Failed to save config.json: {e}")
             return None
@@ -153,8 +160,12 @@ class MainWindow(QMainWindow):
     def _apply_settings_to_runtime(self):
         """Push the in-memory config into the controller, plot, and poll worker."""
         if self.controller:
-            apply_settings(self.controller.config, self.config,
-                           self.controller.logger, self.controller.pid)
+            # Everything the controller derives live (device_specs, log_fields,
+            # build_series_manifest, column_prefixes) reads this dict, so rebind
+            # rather than rely on it still being the object passed at construction.
+            self.controller.config = self.config
+            apply_settings(self.config, self.controller.logger,
+                           self.controller.pid)
 
         if hasattr(self, 'plot_widget'):
             self.plot_widget.set_max_points(self.config.get('max_plot_points', 500))
@@ -408,7 +419,9 @@ class MainWindow(QMainWindow):
         self.chk_ramp_flow = QCheckBox("Stepwise ramp")
         self.chk_ramp_flow.setChecked(True)
         self.chk_ramp_flow.setToolTip(
-            "Checked: ramp flows gradually in 0.05 L/min steps (takes ~1 s/step).\n"
+            f"Checked: ramp flows gradually in "
+            f"{self.config.get('flow_ramp_step', 0.25)} L/min steps "
+            f"({self.config.get('flow_ramp_delay', 0.3)} s per step).\n"
             "Unchecked: jump directly to setpoint."
         )
 
