@@ -49,8 +49,11 @@ class DataLogger:
         self.fieldnames = fieldnames
         self.current_file = self._generate_filename(prefix=prefix)
 
-        # Open file handle and keep it open for efficient writing
-        self._file_handle = open(self.current_file, "w", newline="", buffering=8192)
+        # Held open for the life of the log: reopening per row would cost a
+        # directory lookup and an open() every poll, and on the network share
+        # `log_dir` usually points at that is far more expensive than the write
+        # itself. Each row is flushed instead — see log_data().
+        self._file_handle = open(self.current_file, "w", newline="")
         # extrasaction="ignore": the field list is derived from the configured
         # device set, so a reading arriving from a device that was removed
         # mid-session is dropped rather than raising in the poll loop.
@@ -63,6 +66,24 @@ class DataLogger:
         print(f"Started new log file: {self.current_file}")
 
     def log_data(self, data: Dict[str, any]):
+        """Append one row and push it to disk immediately.
+
+        The flush is what makes the log a *stream*: without it the row sits in
+        Python's buffer until it fills or the file is closed, so a run in
+        progress reads as minutes behind (or as an empty file), and a crash or a
+        killed process loses everything buffered since the last boundary. An
+        experiment can run for hours and is exactly when someone wants to open
+        the CSV and watch it, so the row has to be there as soon as it is taken.
+
+        The cost is one small write per poll — a couple of hundred bytes every
+        ``control_interval`` — which is nothing next to the serial round-trips
+        that produced the row, and it happens on the poll/experiment thread, not
+        the GUI thread. ``flush()`` hands the bytes to the OS, which is what
+        makes them visible to other readers; ``os.fsync()`` would additionally
+        force them onto the physical device and is deliberately not called, as
+        it costs orders of magnitude more and only buys anything against a power
+        cut rather than against the process dying.
+        """
         if not self._csv_writer or not self.fieldnames:
             raise ValueError("No log file started. Call start_new_log() first.")
 
@@ -70,8 +91,8 @@ class DataLogger:
         if "timestamp" not in data:
             data["timestamp"] = datetime.now().isoformat()
 
-        # Write data using cached writer (much faster than opening/closing file)
         self._csv_writer.writerow(data)
+        self._file_handle.flush()
 
     def read_log(self, filename: Optional[str] = None) -> List[Dict[str, str]]:
         file_to_read = filename or self.current_file
