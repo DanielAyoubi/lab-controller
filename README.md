@@ -43,6 +43,10 @@ python -m venv .venv
    empty cell leaves that setpoint unchanged. **Start experiment** logs to
    `experiment_HHMMSS.csv` and saves a PNG summary next to it when the experiment ends
    or is stopped.
+6. **Experiment name** is optional and goes into both file names, so a run is easy to find
+   later: `experiment_HHMMSS_salt_NaCl.csv` and `experiment_HHMMSS_salt_NaCl.png`. Anything
+   that is not a letter, digit, dash or underscore becomes an underscore, and the name is cut
+   at 40 characters. The name is read when the run starts, so the field is locked while it runs.
 
 In the humidity cycle, the *humid share* is the percentage of the total flow sent
 through the humid MFC. The dry MFC supplies the rest. With a saturating bubbler this

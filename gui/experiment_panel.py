@@ -32,6 +32,8 @@ class ExperimentPanel(QWidget):
         self.high = spin_box(0, 100, 90, " %")
         self.step = spin_box(0.1, 100, 10, " %")
         self.hold = spin_box(0.1, 10000, 30, " min")
+        self.start_at = QComboBox()
+        self.start_at.addItems(["Lowest (ramp up)", "Highest (ramp down)"])
         self.cycles = QSpinBox()
         self.cycles.setRange(1, 1000)
         self.cycles.setValue(3)
@@ -46,6 +48,7 @@ class ExperimentPanel(QWidget):
         cycle_form.addRow("Highest humid share", self.high)
         cycle_form.addRow("Step", self.step)
         cycle_form.addRow("Hold per step", self.hold)
+        cycle_form.addRow("Start at", self.start_at)
         cycle_form.addRow("Cycles", self.cycles)
         cycle_form.addRow(fill_button)
         cycle_form.addRow(QLabel("Humid share = % of the total flow sent\nthrough the humid MFC."))
@@ -145,7 +148,7 @@ class ExperimentPanel(QWidget):
             return
         steps = humidity_cycle(self.humid_mfc.currentText(), self.dry_mfc.currentText(), self.total_flow.value(),
                                self.low.value(), self.high.value(), self.step.value(), self.hold.value(),
-                               self.cycles.value())
+                               self.cycles.value(), self.start_at.currentIndex() == 1)
         self.table.setRowCount(0)
         for step in steps:
             self.add_step(step)

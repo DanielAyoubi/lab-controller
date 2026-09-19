@@ -4,16 +4,19 @@ from datetime import datetime
 from matplotlib.figure import Figure
 
 
-def humidity_cycle(humid_mfc, dry_mfc, total_flow, low, high, step, hold_minutes, cycles):
+def humidity_cycle(humid_mfc, dry_mfc, total_flow, low, high, step, hold_minutes, cycles,
+                   start_high=False):
     rising = []
     i = 0
     while round(low + i * step, 6) < high:
         rising.append(round(low + i * step, 6))
         i += 1
     rising.append(high)
-    # Up, then back down without repeating the top and bottom levels.
-    one_cycle = rising + rising[-2:0:-1]
-    levels = one_cycle * cycles + [low]
+    # A reverse ramp runs the same levels from the top down.
+    ramp = rising[::-1] if start_high else rising
+    # Out, then back without repeating the two end levels.
+    one_cycle = ramp + ramp[-2:0:-1]
+    levels = one_cycle * cycles + [ramp[0]]
 
     steps = []
     for level in levels:
