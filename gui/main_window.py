@@ -20,7 +20,7 @@ DEFAULT_SETUP = os.path.join("setups", "humidity.json")
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.settings = QSettings("ACME", "ACME-lab-controller")
+        self.settings = QSettings("ACME", "ACME-controller")
         self.worker = None
         self.setup = None
         self.setup_path = None

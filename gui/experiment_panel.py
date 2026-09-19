@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (
-    QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMessageBox, QPushButton,
-    QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+    QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from devices import DEVICE_TYPES
@@ -53,6 +53,12 @@ class ExperimentPanel(QWidget):
         cycle_group.setLayout(cycle_form)
         cycle_group.setMaximumWidth(330)
 
+        self.name = QLineEdit()
+        self.name.setPlaceholderText("optional, added to the CSV and PNG file names")
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("Experiment name"))
+        name_row.addWidget(self.name)
+
         self.table = QTableWidget()
         self.table.itemChanged.connect(self.update_summary)
         add_button = QPushButton("Add step")
@@ -75,6 +81,7 @@ class ExperimentPanel(QWidget):
         table_buttons.addWidget(self.start_button)
 
         steps_layout = QVBoxLayout()
+        steps_layout.addLayout(name_row)
         steps_layout.addWidget(QLabel("Steps (an empty cell leaves that setpoint unchanged)"))
         steps_layout.addWidget(self.table)
         steps_layout.addLayout(table_buttons)
@@ -180,7 +187,7 @@ class ExperimentPanel(QWidget):
         if not steps:
             QMessageBox.warning(self, "Experiment", "The step table is empty.")
             return
-        self.send(("start", steps))
+        self.send(("start", steps, self.name.text()))
         self.show_step(1)
 
     def set_connected(self, connected):
@@ -191,6 +198,8 @@ class ExperimentPanel(QWidget):
     def show_step(self, step):
         """Called with the step number from each new data row ("" when no experiment runs)."""
         self.running = step != ""
+        # The name is read when the log file opens, so editing it mid-run would change nothing.
+        self.name.setEnabled(not self.running)
         if self.running:
             self.start_button.setText(f"Stop experiment (step {step}/{self.table.rowCount()})")
             self.table.selectRow(step - 1)

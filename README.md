@@ -2,7 +2,7 @@
   <img src="docs/logo.svg" alt="ACME - Aerosol and Cloud Microphysics Experiments" width="520">
 </p>
 
-# ACME lab controller
+# ACME controller
 
 ACME (Aerosol and Cloud Microphysics Experiments) is a small PyQt6 app to run lab
 instruments (mass flow controllers, RH probes, chillers, O₂ meters, …) and to script
@@ -14,8 +14,8 @@ controls, plot panels and CSV columns for those devices appear.
 ## Run
 
 ```
-git clone https://github.com/DanielAyoubi/ACME-lab-controller.git
-cd ACME-lab-controller
+git clone https://github.com/DanielAyoubi/ACME-controller.git
+cd ACME-controller
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt
 .venv\Scripts\python main.py

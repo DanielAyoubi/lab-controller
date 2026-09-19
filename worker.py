@@ -14,6 +14,14 @@ from humidity import calibrated_rh, rh_from_dewpoint
 RECONNECT_INTERVAL = 10  # seconds between attempts to reach a device that is not answering
 
 
+def file_name_part(name):
+    """The experiment name reduced to what is safe in a file name, or "" if nothing is left."""
+    cleaned = "".join(char if char.isalnum() or char in "-_" else "_" for char in name.strip())
+    while "__" in cleaned:
+        cleaned = cleaned.replace("__", "_")
+    return cleaned.strip("_")[:40]
+
+
 def data_units(setup):
     units = {}
     for device in setup["devices"]:
@@ -36,7 +44,7 @@ class Worker(QThread):
 
     The GUI sends it commands through `commands`:
         ("set", device name, control, value)
-        ("start", steps)
+        ("start", steps, experiment name)
         ("stop",)
         ("rh_control", settings, on)
     """
@@ -82,7 +90,7 @@ class Worker(QThread):
                 if command[0] == "set":
                     self.set_value(command[1], command[2], command[3])
                 elif command[0] == "start":
-                    self.start_experiment(command[1])
+                    self.start_experiment(command[1], command[2])
                 elif command[0] == "stop" and self.steps:
                     self.stop_experiment("Experiment stopped.")
                 elif command[0] == "rh_control":
@@ -231,13 +239,13 @@ class Worker(QThread):
                 self.connected.discard(name)
                 self.last_attempt[name] = time.time()
 
-    def start_experiment(self, steps):
+    def start_experiment(self, steps, name=""):
         if self.rh_enabled:
             self.set_rh_control(self.rh, False)
             self.message.emit("RH control switched off: the experiment sets the flows itself.")
         if self.steps:
             self.stop_experiment("Previous experiment stopped.")
-        self.open_log("experiment")
+        self.open_log("experiment", name)
         self.steps = steps
         self.step_index = -1
         self.step_end = 0  # so the first step starts straight away
@@ -272,12 +280,14 @@ class Worker(QThread):
         if self.running:
             self.open_log("monitor")
 
-    def open_log(self, prefix):
+    def open_log(self, prefix, name=""):
         self.close_log()
         now = datetime.now()
         folder = os.path.join(self.setup["log_folder"], now.strftime("%Y-%m-%d"))
         os.makedirs(folder, exist_ok=True)
-        self.log_path = os.path.join(folder, f"{prefix}_{now:%H%M%S}.csv")
+        # The time comes first, so a day's files still sort in the order they were recorded.
+        suffix = file_name_part(name)
+        self.log_path = os.path.join(folder, f"{prefix}_{now:%H%M%S}{'_' + suffix if suffix else ''}.csv")
         self.log_file = open(self.log_path, "w", newline="", encoding="utf-8")
         self.log_writer = csv.DictWriter(self.log_file, ["time", "step"] + list(self.units))
         self.log_writer.writeheader()
