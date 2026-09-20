@@ -3,7 +3,7 @@ import os
 
 from PyQt6.QtCore import QSettings, Qt
 from PyQt6.QtWidgets import (
-    QAbstractSpinBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout, QGroupBox,
+    QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGridLayout, QGroupBox,
     QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton, QScrollArea, QSplitter, QTabWidget,
     QVBoxLayout, QWidget,
 )
@@ -31,7 +31,7 @@ class MainWindow(QMainWindow):
         self.column_width = None  # set once the handle is dragged, and then left alone
 
         file_menu = self.menuBar().addMenu("File")
-        self.open_action = file_menu.addAction("Open setup…")
+        self.open_action = file_menu.addAction("Open from setup catalog…")
         self.open_action.triggered.connect(self.open_setup)
         file_menu.addAction("Save setup as…").triggered.connect(self.save_setup_as)
 
@@ -86,7 +86,7 @@ class MainWindow(QMainWindow):
             setup.setdefault("log_folder", "data")
             setup.setdefault("poll_interval", 2.0)
             setup.setdefault("devices", [])
-            setup.setdefault("cell_rh", {"dewpoint_from": "", "temperature_from": ""})
+            setup.setdefault("computed_rh", [])
             setup.setdefault("rh_control", {"source": "", "humid_mfc": "", "dry_mfc": "", "target": 50.0,
                                             "total_flow": 2.0, "kp": 1.0, "ki": 0.03, "kd": 0.0})
             for device in setup["devices"]:
@@ -105,12 +105,12 @@ class MainWindow(QMainWindow):
             json.dump(self.setup, file, indent=2, ensure_ascii=False)
 
     def open_setup(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Open setup", "setups", "Setup files (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Setup catalog", "setups", "Setup files (*.json)")
         if path:
             self.load_setup(path)
 
     def save_setup_as(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save setup as", "setups", "Setup files (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "Save into setup catalog", "setups", "Setup files (*.json)")
         if path:
             self.setup_path = path
             self.settings.setValue("setup_path", path)
@@ -197,9 +197,10 @@ class MainWindow(QMainWindow):
     def rh_control_box(self, flow_devices):
         settings = self.setup["rh_control"]
         self.rh_source = QComboBox()
-        # Every RH-like column: a device's "rh" reading, or the RH worked out from a dew point.
+        # Every RH-like column: a device's "rh" reading, or an RH worked out from a dew point.
+        computed = [entry["name"] for entry in self.setup["computed_rh"]]
         self.rh_source.addItems([column for column in self.units
-                                 if column.endswith(" rh") or column.startswith("Cell RH")])
+                                 if column.endswith(" rh") or column in computed])
         self.rh_source.setCurrentText(settings["source"])
         self.rh_humid = QComboBox()
         self.rh_humid.addItems(flow_devices)
@@ -209,24 +210,9 @@ class MainWindow(QMainWindow):
         self.rh_dry.setCurrentText(settings["dry_mfc"])
         self.rh_target = spin_box(0, 100, settings["target"], " %")
         self.rh_total = spin_box(0, 100, settings["total_flow"], " L/min", step=0.1)
-        self.rh_kp = spin_box(0, 100, settings["kp"], "")
-        self.rh_ki = spin_box(0, 100, settings["ki"], "")
-        self.rh_kd = spin_box(0, 100, settings["kd"], "")
         self.rh_hold = QPushButton("Hold RH")
         self.rh_hold.setCheckable(True)
         self.rh_status = QLabel("off")
-
-        gains = QHBoxLayout()
-        for name, box in (("Kp", self.rh_kp), ("Ki", self.rh_ki), ("Kd", self.rh_kd)):
-            box.setDecimals(3)
-            box.setSingleStep(0.01)  # the arrow keys still step, even without the buttons
-            # Three of these side by side would otherwise set the width of the whole column.
-            box.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-            box.setMaximumWidth(75)
-            # spin_box had only 2 decimals when it set the value, so set it again.
-            box.setValue(settings[name.lower()])
-            gains.addWidget(QLabel(name))
-            gains.addWidget(box)
 
         form = QFormLayout()
         form.addRow("RH source", self.rh_source)
@@ -234,7 +220,6 @@ class MainWindow(QMainWindow):
         form.addRow("Dry MFC", self.rh_dry)
         form.addRow("Target RH", self.rh_target)
         form.addRow("Total flow", self.rh_total)
-        form.addRow(gains)  # spans both columns: Kp, Ki and Kd label themselves
         form.addRow(self.rh_hold)
         form.addRow(self.rh_status)
         box = QGroupBox("RH control")
@@ -243,22 +228,21 @@ class MainWindow(QMainWindow):
         # Connect only now, so filling in the saved values above did not count as an edit.
         for widget in (self.rh_source, self.rh_humid, self.rh_dry):
             widget.currentIndexChanged.connect(self.rh_changed)
-        for widget in (self.rh_target, self.rh_total, self.rh_kp, self.rh_ki, self.rh_kd):
+        for widget in (self.rh_target, self.rh_total):
             widget.editingFinished.connect(self.rh_changed)
         self.rh_hold.clicked.connect(self.rh_changed)
         return box
 
     def rh_changed(self):
         """Save what the RH control box shows, and hand it to a running worker."""
+        # Spread first: the PID gains have no widgets and are only edited in the setup file.
         self.setup["rh_control"] = {
+            **self.setup["rh_control"],
             "source": self.rh_source.currentText(),
             "humid_mfc": self.rh_humid.currentText(),
             "dry_mfc": self.rh_dry.currentText(),
             "target": self.rh_target.value(),
             "total_flow": self.rh_total.value(),
-            "kp": self.rh_kp.value(),
-            "ki": self.rh_ki.value(),
-            "kd": self.rh_kd.value(),
         }
         self.save_setup()
         if self.worker is None:
@@ -273,7 +257,7 @@ class MainWindow(QMainWindow):
 
     def toggle_connection(self):
         if self.worker is None:
-            # Rebuild first: the RH source picked in the box decides which columns the worker logs.
+            # Rebuild first, so the worker starts from the setup exactly as the window shows it.
             self.rebuild()
             self.worker = Worker(self.setup)
             self.worker.new_data.connect(self.show_data)
@@ -297,7 +281,8 @@ class MainWindow(QMainWindow):
         self.open_action.setEnabled(not connected)
         self.experiment_panel.set_connected(connected)
         if self.rh_hold is not None:
-            # These three name CSV columns and devices, so they must not change under the worker.
+            # These three name a column and two devices the loop reads, so they must not
+            # change under a running worker.
             self.rh_source.setEnabled(not connected)
             self.rh_humid.setEnabled(not connected)
             self.rh_dry.setEnabled(not connected)

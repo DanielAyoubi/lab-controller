@@ -24,10 +24,7 @@
       "address": 1
     }
   ],
-  "cell_rh": {
-    "dewpoint_from": "",
-    "temperature_from": ""
-  },
+  "computed_rh": [],
   "rh_control": {
     "source": "RH upstream rh",
     "humid_mfc": "Humid MFC",

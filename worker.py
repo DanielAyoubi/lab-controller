@@ -27,15 +27,11 @@ def data_units(setup):
     for device in setup["devices"]:
         for reading, unit in DEVICE_TYPES[device["type"]].readings.items():
             units[f"{device['name']} {reading}"] = unit
-    dewpoint_column = f"{setup['cell_rh']['dewpoint_from']} dewpoint"
-    temperature_column = f"{setup['cell_rh']['temperature_from']} temperature"
-    if dewpoint_column in units and temperature_column in units:
-        units["Cell RH"] = "%"
-        units["Cell RH calibrated"] = "%"
-    # Only when the reading the loop follows is really there: no source means no columns either.
-    if setup["rh_control"]["source"] in units:
-        units["RH control setpoint"] = "%"
-        units["RH control share"] = "%"
+    # A computed RH channel only exists while both of the devices it reads are in the setup.
+    for entry in setup["computed_rh"]:
+        if (f"{entry['dewpoint_from']} dewpoint" in units
+                and f"{entry['temperature_from']} temperature" in units):
+            units[entry["name"]] = "%"
     return units
 
 
@@ -150,12 +146,14 @@ class Worker(QThread):
                 except Exception:
                     pass
 
-        if "Cell RH" in self.units:
-            dewpoint = row[f"{self.setup['cell_rh']['dewpoint_from']} dewpoint"]
-            temperature = row[f"{self.setup['cell_rh']['temperature_from']} temperature"]
+        for entry in self.setup["computed_rh"]:
+            if entry["name"] not in self.units:
+                continue
+            dewpoint = row[f"{entry['dewpoint_from']} dewpoint"]
+            temperature = row[f"{entry['temperature_from']} temperature"]
             if dewpoint is not None and temperature is not None:
-                row["Cell RH"] = rh_from_dewpoint(dewpoint, temperature)
-                row["Cell RH calibrated"] = calibrated_rh(row["Cell RH"])
+                rh = rh_from_dewpoint(dewpoint, temperature)
+                row[entry["name"]] = calibrated_rh(rh) if entry["calibrated"] else rh
 
         self.update_rh_control(row)
 
@@ -209,8 +207,11 @@ class Worker(QThread):
         self.rh_control_state.emit(self.rh_enabled)
 
     def update_rh_control(self, row):
-        if "RH control setpoint" not in self.units or not self.rh_enabled:
+        if not self.rh_enabled:
             return
+        # The target and the share below are for the status line in the window only. They are
+        # not in `units`, so they are neither logged nor plotted: the target is what the user
+        # typed, and the share is the humid MFC setpoint over the total flow.
         row["RH control setpoint"] = self.rh["target"]
         humid = self.rh["humid_mfc"]
         dry = self.rh["dry_mfc"]
@@ -289,7 +290,10 @@ class Worker(QThread):
         suffix = file_name_part(name)
         self.log_path = os.path.join(folder, f"{prefix}_{now:%H%M%S}{'_' + suffix if suffix else ''}.csv")
         self.log_file = open(self.log_path, "w", newline="", encoding="utf-8")
-        self.log_writer = csv.DictWriter(self.log_file, ["time", "step"] + list(self.units))
+        # extrasaction: the row also carries the RH control fields the window shows,
+        # and those are deliberately not columns.
+        self.log_writer = csv.DictWriter(self.log_file, ["time", "step"] + list(self.units),
+                                         extrasaction="ignore")
         self.log_writer.writeheader()
 
     def close_log(self):

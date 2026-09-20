@@ -8,9 +8,6 @@ ACME (Aerosol and Cloud Microphysics Experiments) is a small PyQt6 app to run la
 instruments (mass flow controllers, RH probes, chillers, O₂ meters, …) and to script
 simple experiments such as humidity cycles.
 
-The window is built from a **setup file** that lists the devices on the rig. Only the
-controls, plot panels and CSV columns for those devices appear.
-
 ## Run
 
 ```
@@ -27,26 +24,19 @@ python -m venv .venv
    or click **Detect devices…** to scan the serial ports. A quick scan tries default and
    already-used addresses. A deep scan also sweeps Modbus addresses 1–247.
 2. **Connect** starts polling. Every reading goes to the plot, to *Latest readings* and to
-   a CSV file in the log folder: `data/YYYY-MM-DD/monitor_HHMMSS.csv`. Each row is written
-   to disk as soon as it is read.
+   a CSV file in the log folder: `data/YYYY-MM-DD/monitor_HHMMSS.csv`.
 3. **Manual control** has a row for each setpoint a device accepts (MFC flow, chiller
    temperature, …).
-4. **RH control** holds the RH at a target instead of you chasing it by hand. Pick the RH
-   reading to follow, which MFC carries the humid air and which the dry, a target and a total
-   flow, then click **Hold RH**. A PID moves the humid share of the flow; the total flow stays
-   where you set it. The target and the gains can be changed while it holds. `Kp` is % share per
-   % RH, `Ki` per % RH second and `Kd` per % RH per second; start with `Kd` at 0, since the RH
-   signal is noisy. The loop waits quietly while a reading or an MFC is missing, and switches
-   itself off when an experiment starts, because the step table sets the same two flows.
+4. **RH control** Pick the RH reading to follow, which MFC carries the humid air and which the dry, a target and a total
+   flow, then click **Hold RH**. A PID moves the humid share of the flow to hit and stay at the picked RH.
+   The line under the button reports the target it is holding and the humid share it asks for.
 5. **Experiment** tab: fill the step table with the *Humidity cycle* form, or type steps
    yourself. Each step holds for its time in minutes and sets the values in its row. An
    empty cell leaves that setpoint unchanged. **Start experiment** logs to
    `experiment_HHMMSS.csv` and saves a PNG summary next to it when the experiment ends
-   or is stopped.
-6. **Experiment name** is optional and goes into both file names, so a run is easy to find
-   later: `experiment_HHMMSS_salt_NaCl.csv` and `experiment_HHMMSS_salt_NaCl.png`. Anything
+   or is stopped. Experiment name can be set and is added to file names. Anything
    that is not a letter, digit, dash or underscore becomes an underscore, and the name is cut
-   at 40 characters. The name is read when the run starts, so the field is locked while it runs.
+   at 40 characters.
 
 In the humidity cycle, the *humid share* is the percentage of the total flow sent
 through the humid MFC. The dry MFC supplies the rest. With a saturating bubbler this
@@ -54,10 +44,10 @@ share is roughly the RH.
 
 **Disconnect** (or closing the app) sets all MFC flows to 0.
 
-## Setup files
+## Setup catalog
 
 Keep one JSON file per rig or experiment type in `setups/`, and switch between them with
-File → Open setup. The app reopens the last setup you used.
+File → Open from setup catalog. The program reopens the last setup you used.
 
 ```json
 {
@@ -67,22 +57,29 @@ File → Open setup. The app reopens the last setup you used.
     {"name": "Humid MFC", "type": "vogtlin_mfc", "port": "COM23", "baudrate": 9600, "address": 24},
     {"name": "RH upstream", "type": "vaisala_rh", "port": "COM24", "baudrate": 19200, "address": 240}
   ],
-  "cell_rh": {"dewpoint_from": "", "temperature_from": ""},
+  "computed_rh": [
+    {"name": "Cell RH", "temperature_from": "Julabo chiller", "dewpoint_from": "RH upstream", "calibrated": true}
+  ],
   "rh_control": {"source": "RH downstream rh", "humid_mfc": "Humid MFC", "dry_mfc": "Dry MFC",
                  "target": 60.0, "total_flow": 2.0, "kp": 1.0, "ki": 0.03, "kd": 0.0}
 }
 ```
 
 - A device's `name` must be unique. It prefixes its columns, e.g. `Humid MFC flow`.
-- `cell_rh`: pick a device that measures dew point and another that measures temperature
-  (for example the Julabo's external probe). The app then adds `Cell RH` (Magnus formula)
-  and `Cell RH calibrated` (salt-deliquescence fit in `humidity.py`).
-- `rh_control`: what the RH control box starts with. The box writes back to it, so the last
-  target and gains are there next time. With a `source` set, the log gains the columns
-  `RH control setpoint` and `RH control share` (the humid share the PID asks for).
+- `computed_rh`: any number of RH columns worked out from two devices you already have —
+  one that measures temperature (for example the Julabo's external probe) and one that
+  measures dew point. Each entry adds one column under its own `name`, from the Magnus
+  formula. With `calibrated` true, that result is then passed through the linear fit in
+  `calibrated_rh` in `humidity.py` (a salt-deliquescence fit; change the two numbers there
+  to match your own cell). List the same pair twice under different names to log the raw
+  and the calibrated value side by side. An entry whose devices are not in the setup is
+  ignored. Edit the list in the **Devices…** dialog.
+- `rh_control`: what the RH control box starts with. The box writes back the source, the two
+  MFCs, the target and the total flow, so they are there next time. The PID gains `kp`, `ki`
+  and `kd` have no boxes in the window: retune a rig by editing them here.
 - A relative `log_folder` is relative to the app folder.
 
-## Supported devices
+## Device catalog
 
 | type | device | readings | setpoints |
 |------|--------|----------|-----------|
@@ -110,7 +107,8 @@ File → Open setup. The app reopens the last setup you used.
        def set(self, name, value): ... # only needed when controls is not empty
    ```
 
-2. Add it to `DEVICE_TYPES` in `devices/__init__.py`.
+2. Add it to `DEVICE_TYPES` in `devices/__init__.py`. That is what puts the driver in the
+   device catalog above.
 
 The Devices dialog, manual controls, plot, CSV and experiment table then pick it up
 automatically. Readings with a new unit get their own plot panel. A device with an

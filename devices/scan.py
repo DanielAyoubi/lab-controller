@@ -8,11 +8,9 @@ MODBUS_TIMEOUT = 0.15
 
 
 def scan(deep, known_addresses, on_progress):
-    """Look for known devices on every serial port. Only reads; never changes a setpoint.
-
+    """Look for known devices on every serial port.
     A quick scan tries each type's default address plus `known_addresses`. A deep scan also
-    sweeps Modbus addresses 1-247 and keeps sweeping after a hit, because several MFCs can
-    share one RS-485 bus. `on_progress(port_number, text)` returns False to cancel.
+    sweeps Modbus addresses 1-247. `on_progress(port_number, text)` returns False to cancel.
     Returns a list of device dicts without names.
     """
     ports = [port.device for port in list_ports.comports()]
