@@ -32,7 +32,7 @@ class DevicesDialog(QDialog):
     def __init__(self, setup, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Devices")
-        self.resize(900, 650)
+        self.resize(900, 800)
         self.setup = copy.deepcopy(setup)
         self.ports = [port.device for port in list_ports.comports()]
 

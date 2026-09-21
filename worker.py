@@ -49,6 +49,8 @@ class Worker(QThread):
     message = pyqtSignal(str)
     # Emitted when the worker itself turns the RH loop on or off, so the button can follow.
     rh_control_state = pyqtSignal(bool)
+    # Emitted, with the reason, when no device answers the first try and the worker gives up.
+    connection_failed = pyqtSignal(str)
 
     def __init__(self, setup):
         super().__init__()
@@ -78,13 +80,25 @@ class Worker(QThread):
         self.log_path = None
 
     def run(self):
+        for name in self.devices:
+            self.try_connect(name)
+        # With nothing answering there is nothing to plot or log.
+        if not self.connected:
+            self.connection_failed.emit("No device answered. Check the settings under Devices… "
+                                        "and connect again.")
+            return
         self.open_log("monitor")
         next_poll = 0
         while self.running:
             while not self.commands.empty():
                 command = self.commands.get()
                 if command[0] == "set":
-                    self.set_value(command[1], command[2], command[3])
+                    # The window locks manual control during an experiment, but a click can still
+                    # be queued in the moment before the first row shows the run has started.
+                    if self.steps:
+                        self.message.emit(f"Cannot set {command[1]} {command[2]}: an experiment is running.")
+                    else:
+                        self.set_value(command[1], command[2], command[3])
                 elif command[0] == "start":
                     self.start_experiment(command[1], command[2])
                 elif command[0] == "stop" and self.steps:
@@ -119,6 +133,7 @@ class Worker(QThread):
         row = {"time": datetime.now().replace(microsecond=0), "step": ""}
         if self.steps:
             row["step"] = self.step_index + 1
+            row["step end"] = self.step_end
         for column in self.units:
             row[column] = None
 
@@ -126,13 +141,8 @@ class Worker(QThread):
             if name not in self.connected:
                 if time.time() - self.last_attempt[name] < RECONNECT_INTERVAL:
                     continue
-                self.last_attempt[name] = time.time()
-                try:
-                    device.connect()
-                    self.connected.add(name)
-                    self.message.emit(f"{name} connected.")
-                except Exception as error:
-                    self.message.emit(f"{name}: not answering ({error})")
+                self.try_connect(name)
+                if name not in self.connected:
                     continue
             try:
                 for reading, value in device.read().items():
@@ -163,6 +173,15 @@ class Worker(QThread):
         self.new_data.emit(row)
         self.last_row = row
 
+    def try_connect(self, name):
+        self.last_attempt[name] = time.time()
+        try:
+            self.devices[name].connect()
+            self.connected.add(name)
+            self.message.emit(f"{name} connected.")
+        except Exception as error:
+            self.message.emit(f"{name}: not answering ({error})")
+
     def set_value(self, name, control, value):
         if name not in self.connected:
             self.message.emit(f"Cannot set {name} {control}: device is not connected.")
@@ -184,7 +203,9 @@ class Worker(QThread):
         if on:
             humid = settings["humid_mfc"]
             dry = settings["dry_mfc"]
-            if settings["source"] not in self.units:
+            if self.steps:
+                self.message.emit("RH control cannot run during an experiment: the experiment sets the flows.")
+            elif settings["source"] not in self.units:
                 self.message.emit("RH control needs an RH reading to follow.")
             elif humid == dry or humid not in self.devices or dry not in self.devices:
                 self.message.emit("RH control needs two different MFCs.")
@@ -290,8 +311,8 @@ class Worker(QThread):
         suffix = file_name_part(name)
         self.log_path = os.path.join(folder, f"{prefix}_{now:%H%M%S}{'_' + suffix if suffix else ''}.csv")
         self.log_file = open(self.log_path, "w", newline="", encoding="utf-8")
-        # extrasaction: the row also carries the RH control fields the window shows,
-        # and those are deliberately not columns.
+        # extrasaction: the row also carries the RH control fields and the step end time the
+        # window shows, and those are deliberately not columns.
         self.log_writer = csv.DictWriter(self.log_file, ["time", "step"] + list(self.units),
                                          extrasaction="ignore")
         self.log_writer.writeheader()

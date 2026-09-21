@@ -1,3 +1,7 @@
+import math
+import time
+from datetime import datetime, timedelta
+
 from PyQt6.QtWidgets import (
     QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
     QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
@@ -16,6 +20,11 @@ def spin_box(minimum, maximum, value, suffix, step=1.0):
     return box
 
 
+def hours_minutes(minutes):
+    hours, minutes = divmod(round(minutes), 60)
+    return f"{hours} h {minutes} min" if hours else f"{minutes} min"
+
+
 class ExperimentPanel(QWidget):
     """Build a list of timed steps, then run it. `send` passes a command to the worker."""
 
@@ -24,6 +33,7 @@ class ExperimentPanel(QWidget):
         self.send = send
         self.controls = []  # (device name, control, unit), one table column each
         self.running = False
+        self.steps = []  # the steps last sent to the worker, so edits to the table mid-run change nothing
 
         self.humid_mfc = QComboBox()
         self.dry_mfc = QComboBox()
@@ -175,8 +185,7 @@ class ExperimentPanel(QWidget):
                 minutes += float(self.table.item(row, 0).text())
             except ValueError:
                 pass
-        hours, minutes = divmod(round(minutes), 60)
-        self.summary.setText(f"{self.table.rowCount()} steps, {hours} h {minutes} min")
+        self.summary.setText(f"{self.table.rowCount()} steps, {hours_minutes(minutes)}")
 
     def start_or_stop(self):
         if self.running:
@@ -190,6 +199,7 @@ class ExperimentPanel(QWidget):
         if not steps:
             QMessageBox.warning(self, "Experiment", "The step table is empty.")
             return
+        self.steps = steps
         self.send(("start", steps, self.name.text()))
         self.show_step(1)
 
@@ -204,7 +214,30 @@ class ExperimentPanel(QWidget):
         # The name is read when the log file opens, so editing it mid-run would change nothing.
         self.name.setEnabled(not self.running)
         if self.running:
-            self.start_button.setText(f"Stop experiment (step {step}/{self.table.rowCount()})")
+            self.start_button.setText(f"Stop experiment (step {step}/{len(self.steps)})")
             self.table.selectRow(step - 1)
         else:
             self.start_button.setText("Start experiment")
+
+    def describe(self, step):
+        """A step's setpoints as text, like "Humid MFC flow 0.6 L/min, Dry MFC flow 1.4 L/min"."""
+        units = {(name, control): unit for name, control, unit in self.controls}
+        parts = [f"{name} {control} {value:g} {units.get((name, control), '')}".strip()
+                 for (name, control), value in step["setpoints"].items()]
+        return ", ".join(parts) or "no changes"
+
+    def progress(self, step, step_end):
+        """One line on the running experiment for the plot tab, or "" when none runs."""
+        if step == "" or step_end is None:
+            return ""
+        step_left = max(0.0, step_end - time.time())
+        later = self.steps[step:]  # the steps after the current one
+        total_left = step_left + 60 * sum(later_step["minutes"] for later_step in later)
+        ends = datetime.now() + timedelta(seconds=total_left)
+        # Rounded up, so the last minute reads "1 min" rather than "0 min".
+        if later:
+            text = (f"Step {step}/{len(self.steps)} · next in {hours_minutes(math.ceil(step_left / 60))}: "
+                    f"step {step + 1}, {self.describe(later[0])}")
+        else:
+            text = f"Step {step}/{len(self.steps)} (last)"
+        return f"{text} · experiment ends in {hours_minutes(math.ceil(total_left / 60))} (at {ends:%H:%M})"

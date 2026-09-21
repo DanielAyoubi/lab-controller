@@ -52,10 +52,15 @@ class MainWindow(QMainWindow):
         self.plot = LivePlot()
         clear_button = QPushButton("Clear plot")
         clear_button.clicked.connect(self.plot.clear_data)
+        self.experiment_status = QLabel()
+        self.experiment_status.setWordWrap(True)  # a long line wraps rather than widening the window
+        plot_bottom_row = QHBoxLayout()
+        plot_bottom_row.addWidget(self.experiment_status, 1)
+        plot_bottom_row.addWidget(clear_button)
         plot_tab = QWidget()
         plot_layout = QVBoxLayout(plot_tab)
         plot_layout.addWidget(self.plot)
-        plot_layout.addWidget(clear_button)
+        plot_layout.addLayout(plot_bottom_row)
         self.experiment_panel = ExperimentPanel(self.send)
         tabs = QTabWidget()
         tabs.addTab(plot_tab, "Plot")
@@ -154,8 +159,8 @@ class MainWindow(QMainWindow):
             readings_form.addRow(column, self.value_labels[column])
         layout.addWidget(readings_group)
 
-        control_group = QGroupBox("Manual control")
-        control_grid = QGridLayout(control_group)
+        self.control_group = QGroupBox("Manual control")
+        control_grid = QGridLayout(self.control_group)
         row = 0
         for device in self.setup["devices"]:
             for control, unit in DEVICE_TYPES[device["type"]].controls.items():
@@ -174,7 +179,7 @@ class MainWindow(QMainWindow):
                 control_grid.addWidget(set_button, row, 2)
                 row += 1
         if row > 0:
-            layout.addWidget(control_group)
+            layout.addWidget(self.control_group)
 
         self.rh_hold = None
         flow_devices = [device["name"] for device in self.setup["devices"]
@@ -262,6 +267,7 @@ class MainWindow(QMainWindow):
             self.worker = Worker(self.setup)
             self.worker.new_data.connect(self.show_data)
             self.worker.message.connect(self.statusBar().showMessage)
+            self.worker.connection_failed.connect(self.connection_failed)
             if self.rh_hold is not None:
                 self.worker.rh_control_state.connect(self.rh_hold.setChecked)
             self.worker.start()
@@ -273,6 +279,8 @@ class MainWindow(QMainWindow):
             self.worker.wait()
             self.worker = None
             self.connect_button.setText("Connect")
+            self.experiment_status.clear()
+            self.lock_manual_control(False)
             for dot in self.status_dots.values():
                 dot.setStyleSheet("color: gray")
         connected = self.worker is not None
@@ -286,6 +294,19 @@ class MainWindow(QMainWindow):
             self.rh_source.setEnabled(not connected)
             self.rh_humid.setEnabled(not connected)
             self.rh_dry.setEnabled(not connected)
+
+    def lock_manual_control(self, locked):
+        """An experiment sets the flows and setpoints itself, so nothing else may change them meanwhile."""
+        self.control_group.setEnabled(not locked)
+        self.control_group.setTitle("Manual control (locked during the experiment)" if locked else "Manual control")
+        if self.rh_hold is not None:
+            self.rh_hold.setEnabled(not locked)
+
+    def connection_failed(self, text):
+        if self.worker is None:
+            return  # the user disconnected before the worker gave up
+        self.toggle_connection()  # the worker has already stopped; this puts the window back
+        self.statusBar().showMessage(text)
 
     def show_data(self, row):
         if self.worker is None:
@@ -306,6 +327,8 @@ class MainWindow(QMainWindow):
                 label.setText(f"{row[column]:.2f} {self.units[column]}")
         self.plot.add(row)
         self.experiment_panel.show_step(row["step"])
+        self.lock_manual_control(row["step"] != "")
+        self.experiment_status.setText(self.experiment_panel.progress(row["step"], row.get("step end")))
         if self.rh_hold is not None:
             if row.get("RH control setpoint") is None:
                 self.rh_status.setText("off")

@@ -10,21 +10,39 @@
       "address": 24
     },
     {
-      "name": "RH upstream",
-      "type": "vaisala_rh",
-      "port": "COM24",
-      "baudrate": 19200,
-      "address": 240
+      "name": "FireSting O2",
+      "type": "firesting_o2",
+      "port": "COM1",
+      "baudrate": 19200
     },
     {
-      "name": "Vögtlin MFC 3",
+      "name": "EdgeTech DewMaster",
+      "type": "dewmaster",
+      "port": "COM2",
+      "baudrate": 19200
+    },
+    {
+      "name": "Julabo chiller",
+      "type": "julabo_chiller",
+      "port": "COM3",
+      "baudrate": 9600
+    },
+    {
+      "name": "Dry MFC",
       "type": "vogtlin_mfc",
-      "port": "COM25",
+      "port": "COM22",
       "baudrate": 9600,
       "address": 1
     }
   ],
-  "computed_rh": [],
+  "computed_rh": [
+    {
+      "name": "Calibrated RH",
+      "temperature_from": "EdgeTech DewMaster",
+      "dewpoint_from": "EdgeTech DewMaster",
+      "calibrated": true
+    }
+  ],
   "rh_control": {
     "source": "RH upstream rh",
     "humid_mfc": "Humid MFC",
