@@ -205,7 +205,7 @@ class MainWindow(QMainWindow):
         # Every RH-like column: a device's "rh" reading, or an RH worked out from a dew point.
         computed = [entry["name"] for entry in self.setup["computed_rh"]]
         self.rh_source.addItems([column for column in self.units
-                                 if column.endswith(" rh") or column in computed])
+                                 if column.endswith(" RH") or column in computed])
         self.rh_source.setCurrentText(settings["source"])
         self.rh_humid = QComboBox()
         self.rh_humid.addItems(flow_devices)

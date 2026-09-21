@@ -7,7 +7,7 @@ from pymodbus.client import ModbusSerialClient
 class VaisalaRH:
     label = "Vaisala HMP110"
     settings = {"port": "", "baudrate": 19200, "address": 240}
-    readings = {"rh": "%", "temperature": "°C", "dewpoint": "°C"}
+    readings = {"RH": "%", "temperature": "°C", "dewpoint": "°C"}
     controls = {}
 
     def __init__(self, port, baudrate=19200, address=240, timeout=1.0):
@@ -42,7 +42,7 @@ class VaisalaRH:
         registers = response.registers
         values = {}
         # Each value is a 32-bit float in two registers, low word first.
-        for key, high in (("rh", 1), ("temperature", 3), ("dewpoint", 9)):
+        for key, high in (("RH", 1), ("temperature", 3), ("dewpoint", 9)):
             raw = registers[high].to_bytes(2, "big") + registers[high - 1].to_bytes(2, "big")
             value = struct.unpack(">f", raw)[0]
             # The probe reports NaN for a quantity it cannot currently produce.

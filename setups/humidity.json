@@ -3,43 +3,43 @@
   "poll_interval": 2.0,
   "devices": [
     {
-      "name": "Humid MFC",
+      "name": "Wet",
       "type": "vogtlin_mfc",
       "port": "COM23",
       "baudrate": 9600,
       "address": 24
     },
     {
-      "name": "FireSting O2",
-      "type": "firesting_o2",
-      "port": "COM1",
-      "baudrate": 19200
-    },
-    {
-      "name": "EdgeTech DewMaster",
-      "type": "dewmaster",
-      "port": "COM2",
-      "baudrate": 19200
-    },
-    {
-      "name": "Julabo chiller",
-      "type": "julabo_chiller",
-      "port": "COM3",
-      "baudrate": 9600
-    },
-    {
-      "name": "Dry MFC",
+      "name": "Dry",
       "type": "vogtlin_mfc",
       "port": "COM22",
       "baudrate": 9600,
       "address": 1
+    },
+    {
+      "name": "Upstream",
+      "type": "firesting_o2",
+      "port": "",
+      "baudrate": 19200
+    },
+    {
+      "name": "Mirror",
+      "type": "dewmaster",
+      "port": "",
+      "baudrate": 19200
+    },
+    {
+      "name": "Chiller",
+      "type": "julabo_chiller",
+      "port": "",
+      "baudrate": 9600
     }
   ],
   "computed_rh": [
     {
       "name": "Calibrated RH",
-      "temperature_from": "EdgeTech DewMaster",
-      "dewpoint_from": "EdgeTech DewMaster",
+      "temperature_from": "Chiller",
+      "dewpoint_from": "",
       "calibrated": true
     }
   ],

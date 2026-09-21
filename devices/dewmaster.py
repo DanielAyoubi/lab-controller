@@ -13,7 +13,7 @@ READING = re.compile(r"DP\s*=\s*(-?\d+\.\d)\s*C.*?AT\s*=\s*(-?\d+\.\d)\s*C", re.
 class DewMaster:
     label = "EdgeTech DewMaster"
     settings = {"port": "", "baudrate": 19200}
-    readings = {"rh": "%", "temperature": "°C", "dewpoint": "°C"}
+    readings = {"RH": "%", "temperature": "°C", "dewpoint": "°C"}
     controls = {}
 
     def __init__(self, port, baudrate=19200, timeout=5.0):
@@ -50,7 +50,7 @@ class DewMaster:
                 if match:
                     dewpoint = float(match.group(1))
                     temperature = float(match.group(2))
-                    return {"rh": rh_from_dewpoint(dewpoint, temperature), "temperature": temperature,
+                    return {"RH": rh_from_dewpoint(dewpoint, temperature), "temperature": temperature,
                             "dewpoint": dewpoint}
             # The DewMaster sometimes stalls; a bare carriage return wakes it up.
             if time.time() - last_nudge > 1.0:
