@@ -2,13 +2,28 @@ import math
 import time
 from datetime import datetime, timedelta
 
+from PyQt6.QtGui import QBrush, QColor
 from PyQt6.QtWidgets import (
-    QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
-    QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QComboBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
 )
 
 from devices import DEVICE_TYPES
 from experiment import humidity_cycle
+
+CURRENT_STEP_COLOR = QColor(222, 235, 250)
 
 
 def spin_box(minimum, maximum, value, suffix, step=1.0):
@@ -16,7 +31,7 @@ def spin_box(minimum, maximum, value, suffix, step=1.0):
     box.setRange(minimum, maximum)
     box.setValue(value)
     box.setSuffix(suffix)
-    box.setSingleStep(step)  # how far one click of an arrow, or one arrow key, moves the value
+    box.setSingleStep(step)
     return box
 
 
@@ -26,14 +41,15 @@ def hours_minutes(minutes):
 
 
 class ExperimentPanel(QWidget):
-    """Build a list of timed steps, then run it. `send` passes a command to the worker."""
-
     def __init__(self, send):
         super().__init__()
         self.send = send
         self.controls = []  # (device name, control, unit), one table column each
         self.running = False
         self.steps = []  # the steps last sent to the worker, so edits to the table mid-run change nothing
+        self.highlighted_row = (
+            None  # the row currently colored as the running step, or None
+        )
 
         self.humid_mfc = QComboBox()
         self.dry_mfc = QComboBox()
@@ -61,7 +77,9 @@ class ExperimentPanel(QWidget):
         cycle_form.addRow("Start at", self.start_at)
         cycle_form.addRow("Cycles", self.cycles)
         cycle_form.addRow(fill_button)
-        cycle_form.addRow(QLabel("Humid share = % of the total flow sent\nthrough the humid MFC."))
+        cycle_form.addRow(
+            QLabel("Humid share = % of the total flow sent\nthrough the humid MFC.")
+        )
         cycle_group = QGroupBox("Humidity cycle")
         cycle_group.setLayout(cycle_form)
         cycle_group.setMaximumWidth(330)
@@ -95,7 +113,9 @@ class ExperimentPanel(QWidget):
 
         steps_layout = QVBoxLayout()
         steps_layout.addLayout(name_row)
-        steps_layout.addWidget(QLabel("Steps (an empty cell leaves that setpoint unchanged)"))
+        steps_layout.addWidget(
+            QLabel("Steps (an empty cell leaves that setpoint unchanged)")
+        )
         steps_layout.addWidget(self.table)
         steps_layout.addLayout(table_buttons)
 
@@ -119,7 +139,9 @@ class ExperimentPanel(QWidget):
 
         self.table.setRowCount(0)
         self.table.setColumnCount(1 + len(self.controls))
-        headers = ["Hold (min)"] + [f"{name} {control} ({unit})" for name, control, unit in self.controls]
+        headers = ["Hold (min)"] + [
+            f"{name} {control} ({unit})" for name, control, unit in self.controls
+        ]
         self.table.setHorizontalHeaderLabels(headers)
         self.table.resizeColumnsToContents()  # the header names are the widest thing in a column
         self.update_summary()
@@ -150,21 +172,39 @@ class ExperimentPanel(QWidget):
         self.update_summary()
 
     def fill_humidity_cycle(self):
-        if self.humid_mfc.currentText() == "" or self.humid_mfc.currentText() == self.dry_mfc.currentText():
-            QMessageBox.warning(self, "Humidity cycle", "Choose two different MFCs for humid and dry air.")
+        if (
+            self.humid_mfc.currentText() == ""
+            or self.humid_mfc.currentText() == self.dry_mfc.currentText()
+        ):
+            QMessageBox.warning(
+                self,
+                "Humidity cycle",
+                "Choose two different MFCs for humid and dry air.",
+            )
             return
         if self.low.value() >= self.high.value():
-            QMessageBox.warning(self, "Humidity cycle", "The lowest humid share must be below the highest.")
+            QMessageBox.warning(
+                self,
+                "Humidity cycle",
+                "The lowest humid share must be below the highest.",
+            )
             return
-        steps = humidity_cycle(self.humid_mfc.currentText(), self.dry_mfc.currentText(), self.total_flow.value(),
-                               self.low.value(), self.high.value(), self.step.value(), self.hold.value(),
-                               self.cycles.value(), self.start_at.currentIndex() == 1)
+        steps = humidity_cycle(
+            self.humid_mfc.currentText(),
+            self.dry_mfc.currentText(),
+            self.total_flow.value(),
+            self.low.value(),
+            self.high.value(),
+            self.step.value(),
+            self.hold.value(),
+            self.cycles.value(),
+            self.start_at.currentIndex() == 1,
+        )
         self.table.setRowCount(0)
         for step in steps:
             self.add_step(step)
 
     def steps_from_table(self):
-        """The table as a list of steps. Raises ValueError, naming the row, if a cell is not a number."""
         steps = []
         for row in range(self.table.rowCount()):
             try:
@@ -173,9 +213,16 @@ class ExperimentPanel(QWidget):
                     text = self.table.item(row, column).text().strip()
                     if text:
                         setpoints[(name, control)] = float(text)
-                steps.append({"minutes": float(self.table.item(row, 0).text()), "setpoints": setpoints})
+                steps.append(
+                    {
+                        "minutes": float(self.table.item(row, 0).text()),
+                        "setpoints": setpoints,
+                    }
+                )
             except ValueError:
-                raise ValueError(f"Step {row + 1} has a hold time or setpoint that is not a number.")
+                raise ValueError(
+                    f"Step {row + 1} has a hold time or setpoint that is not a number."
+                )
         return steps
 
     def update_summary(self):
@@ -214,30 +261,50 @@ class ExperimentPanel(QWidget):
         # The name is read when the log file opens, so editing it mid-run would change nothing.
         self.name.setEnabled(not self.running)
         if self.running:
-            self.start_button.setText(f"Stop experiment (step {step}/{len(self.steps)})")
-            self.table.selectRow(step - 1)
+            self.start_button.setText(
+                f"Stop experiment (step {step}/{len(self.steps)})"
+            )
+            self.highlight_row(step - 1)
+            self.table.scrollToItem(self.table.item(step - 1, 0))
         else:
             self.start_button.setText("Start experiment")
+            self.highlight_row(None)
+
+    def highlight_row(self, row):
+        if self.highlighted_row is not None:
+            for column in range(self.table.columnCount()):
+                item = self.table.item(self.highlighted_row, column)
+                if item:
+                    item.setBackground(
+                        QBrush()
+                    )  # no brush, so the item falls back to its default background
+        if row is not None:
+            for column in range(self.table.columnCount()):
+                item = self.table.item(row, column)
+                if item:
+                    item.setBackground(CURRENT_STEP_COLOR)
+        self.highlighted_row = row
 
     def describe(self, step):
-        """A step's setpoints as text, like "Humid MFC flow 0.6 L/min, Dry MFC flow 1.4 L/min"."""
         units = {(name, control): unit for name, control, unit in self.controls}
-        parts = [f"{name} {control} {value:g} {units.get((name, control), '')}".strip()
-                 for (name, control), value in step["setpoints"].items()]
+        parts = [
+            f"{name} {control} {value:g} {units.get((name, control), '')}".strip()
+            for (name, control), value in step["setpoints"].items()
+        ]
         return ", ".join(parts) or "no changes"
 
     def progress(self, step, step_end):
-        """One line on the running experiment for the plot tab, or "" when none runs."""
         if step == "" or step_end is None:
             return ""
         step_left = max(0.0, step_end - time.time())
         later = self.steps[step:]  # the steps after the current one
         total_left = step_left + 60 * sum(later_step["minutes"] for later_step in later)
         ends = datetime.now() + timedelta(seconds=total_left)
-        # Rounded up, so the last minute reads "1 min" rather than "0 min".
         if later:
-            text = (f"Step {step}/{len(self.steps)} · next in {hours_minutes(math.ceil(step_left / 60))}: "
-                    f"step {step + 1}, {self.describe(later[0])}")
+            text = (
+                f"Step {step}/{len(self.steps)} · next in {hours_minutes(math.ceil(step_left / 60))}: "
+                f"step {step + 1}, {self.describe(later[0])}"
+            )
         else:
             text = f"Step {step}/{len(self.steps)} (last)"
         return f"{text} · experiment ends in {hours_minutes(math.ceil(total_left / 60))} (at {ends:%H:%M})"

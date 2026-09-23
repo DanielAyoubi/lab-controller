@@ -39,7 +39,7 @@
     {
       "name": "Calibrated RH",
       "temperature_from": "Chiller",
-      "dewpoint_from": "",
+      "dewpoint_from": "Mirror",
       "calibrated": true
     }
   ],

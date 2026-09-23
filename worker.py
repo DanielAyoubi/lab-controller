@@ -14,14 +14,6 @@ from humidity import calibrated_rh, rh_from_dewpoint
 RECONNECT_INTERVAL = 10  # seconds between attempts to reach a device that is not answering
 
 
-def file_name_part(name):
-    """The experiment name reduced to what is safe in a file name, or "" if nothing is left."""
-    cleaned = "".join(char if char.isalnum() or char in "-_" else "_" for char in name.strip())
-    while "__" in cleaned:
-        cleaned = cleaned.replace("__", "_")
-    return cleaned.strip("_")[:40]
-
-
 def data_units(setup):
     units = {}
     for device in setup["devices"]:
@@ -308,7 +300,10 @@ class Worker(QThread):
         folder = os.path.join(self.setup["log_folder"], now.strftime("%Y-%m-%d"))
         os.makedirs(folder, exist_ok=True)
         # The time comes first, so a day's files still sort in the order they were recorded.
-        suffix = file_name_part(name)
+        suffix = "".join(char if char.isalnum() or char in "-_" else "_" for char in name.strip())
+        while "__" in suffix:  # collapse runs of "_" left behind by replaced characters
+            suffix = suffix.replace("__", "_")
+        suffix = suffix.strip("_")[:40]
         self.log_path = os.path.join(folder, f"{prefix}_{now:%H%M%S}{'_' + suffix if suffix else ''}.csv")
         self.log_file = open(self.log_path, "w", newline="", encoding="utf-8")
         # extrasaction: the row also carries the RH control fields and the step end time the
