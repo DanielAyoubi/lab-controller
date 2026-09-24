@@ -27,18 +27,12 @@
       "type": "dewmaster",
       "port": "",
       "baudrate": 19200
-    },
-    {
-      "name": "Chiller",
-      "type": "julabo_chiller",
-      "port": "",
-      "baudrate": 9600
     }
   ],
   "computed_rh": [
     {
       "name": "Calibrated RH",
-      "temperature_from": "Chiller",
+      "temperature_from": "",
       "dewpoint_from": "Mirror",
       "calibrated": true
     }
