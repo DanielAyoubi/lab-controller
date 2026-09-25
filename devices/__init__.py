@@ -1,3 +1,4 @@
+from devices.brooks_mfc import BrooksMFC
 from devices.dewmaster import DewMaster
 from devices.firesting_o2 import FireStingO2
 from devices.julabo_chiller import JulaboChiller
@@ -9,6 +10,7 @@ from devices.vogtlin_mfc import VogtlinMFC
 DEVICE_TYPES = {
     "vogtlin_mfc": VogtlinMFC,
     "vaisala_rh": VaisalaRH,
+    "brooks_mfc": BrooksMFC,
     "julabo_chiller": JulaboChiller,
     "firesting_o2": FireStingO2,
     "dewmaster": DewMaster,

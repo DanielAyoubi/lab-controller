@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
 )
 
 from devices import DEVICE_TYPES
-from gui.devices_dialog import DevicesDialog
+from gui.devices_dialog import DevicesDialog, read_setup
 from gui.experiment_panel import ExperimentPanel, spin_box
 from gui.plot import LivePlot
 from worker import Worker, data_units
@@ -85,18 +85,7 @@ class MainWindow(QMainWindow):
 
     def load_setup(self, path):
         try:
-            with open(path, encoding="utf-8") as file:
-                setup = json.load(file)
-            # Fill in anything a hand-written setup file left out.
-            setup.setdefault("log_folder", "data")
-            setup.setdefault("poll_interval", 2.0)
-            setup.setdefault("devices", [])
-            setup.setdefault("computed_rh", [])
-            setup.setdefault("rh_control", {"source": "", "humid_mfc": "", "dry_mfc": "", "target": 50.0,
-                                            "total_flow": 2.0, "kp": 1.0, "ki": 0.03, "kd": 0.0})
-            for device in setup["devices"]:
-                if device["type"] not in DEVICE_TYPES:
-                    raise ValueError(f"Unknown device type '{device['type']}'")
+            setup = read_setup(path)
         except Exception as error:
             QMessageBox.warning(self, "Open setup", f"Could not open {path}:\n{error}")
             return
@@ -123,9 +112,11 @@ class MainWindow(QMainWindow):
             self.rebuild()
 
     def edit_devices(self):
-        dialog = DevicesDialog(self.setup, self)
+        dialog = DevicesDialog(self.setup, self.setup_path, self)
         if dialog.exec():
             self.setup = dialog.setup
+            self.setup_path = dialog.setup_path
+            self.settings.setValue("setup_path", self.setup_path)
             self.save_setup()
             self.rebuild()
 

@@ -1,4 +1,5 @@
 import copy
+import json
 import os
 
 from PyQt6.QtCore import QThread, Qt, pyqtSignal
@@ -15,6 +16,28 @@ from devices.scan import scan
 
 LOGO = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "logo.png")
 LOGO_HEIGHT = 160
+SETUP_FOLDER = "setups"
+
+
+def read_setup(path):
+    """Load a setup file, filling in anything a hand-written one left out. Raises if it is unusable."""
+    with open(path, encoding="utf-8") as file:
+        setup = json.load(file)
+    fill_setup_defaults(setup)
+    for device in setup["devices"]:
+        if device["type"] not in DEVICE_TYPES:
+            raise ValueError(f"Unknown device type '{device['type']}'")
+    return setup
+
+
+def fill_setup_defaults(setup):
+    setup.setdefault("log_folder", "data")
+    setup.setdefault("poll_interval", 2.0)
+    setup.setdefault("devices", [])
+    setup.setdefault("computed_rh", [])
+    setup.setdefault("rh_control", {"source": "", "humid_mfc": "", "dry_mfc": "", "target": 50.0,
+                                    "total_flow": 2.0, "kp": 1.0, "ki": 0.03, "kd": 0.0})
+    return setup
 
 
 def logo_widget(ratio):
@@ -54,11 +77,13 @@ class ScanWorker(QThread):
 
 
 class DevicesDialog(QDialog):
-    def __init__(self, setup, parent=None):
+    def __init__(self, setup, setup_path, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Devices")
         self.resize(900, 800)
         self.setup = copy.deepcopy(setup)
+        # Load and New only change what the dialog shows; the window switches to this file on OK.
+        self.setup_path = setup_path
         self.ports = [port.device for port in list_ports.comports()]
         self.scan_worker = None
         self.scan_progress = None
@@ -128,6 +153,17 @@ class DevicesDialog(QDialog):
         buttons.rejected.connect(self.reject)
         self.ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
 
+        self.setup_label = QLabel()
+        load_button = QPushButton("Load setup…")
+        load_button.clicked.connect(self.load_setup)
+        new_button = QPushButton("New setup…")
+        new_button.clicked.connect(self.new_setup)
+        setup_row = QHBoxLayout()
+        setup_row.addWidget(self.setup_label)
+        setup_row.addStretch()
+        setup_row.addWidget(load_button)
+        setup_row.addWidget(new_button)
+
         layout = QVBoxLayout(self)
         logo = logo_widget(self.devicePixelRatioF())
         if logo is not None:
@@ -136,6 +172,7 @@ class DevicesDialog(QDialog):
             header.addWidget(logo)
             header.addStretch()
             layout.addLayout(header)
+        layout.addLayout(setup_row)
         layout.addWidget(self.table)
         layout.addLayout(table_buttons)
         layout.addWidget(self.rh_table)
@@ -143,10 +180,41 @@ class DevicesDialog(QDialog):
         layout.addLayout(form)
         layout.addWidget(buttons)
 
+        self.show_setup()
+
+    def show_setup(self):
+        """Fill the dialog from self.setup, replacing whatever it showed."""
+        self.setup_label.setText(f"Setup: {os.path.basename(self.setup_path)}")
+        self.table.setRowCount(0)
+        self.rh_table.setRowCount(0)
         for device in self.setup["devices"]:
             self.add_row(device)
         for entry in self.setup["computed_rh"]:
             self.add_rh_row(entry)
+        self.poll_interval.setValue(self.setup["poll_interval"])
+        self.log_folder.setText(self.setup["log_folder"])
+
+    def load_setup(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Load setup", SETUP_FOLDER, "Setup files (*.json)")
+        if not path:
+            return
+        try:
+            self.setup = read_setup(path)
+        except Exception as error:
+            QMessageBox.warning(self, "Load setup", f"Could not open {path}:\n{error}")
+            return
+        self.setup_path = path
+        self.show_setup()
+
+    def new_setup(self):
+        path, _ = QFileDialog.getSaveFileName(self, "New setup", SETUP_FOLDER, "Setup files (*.json)")
+        if not path:
+            return
+        # Start empty, but keep the general settings: they are rarely different between setups.
+        self.setup = fill_setup_defaults({"log_folder": self.log_folder.text().strip(),
+                                          "poll_interval": self.poll_interval.value()})
+        self.setup_path = path
+        self.show_setup()
 
     def add_row(self, device):
         device_class = DEVICE_TYPES[device["type"]]

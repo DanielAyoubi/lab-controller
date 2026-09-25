@@ -1,0 +1,22 @@
+{
+  "log_folder": "data",
+  "poll_interval": 2.0,
+  "devices": [
+    {
+      "name": "Brooks MFC (Arduino) (COM26)",
+      "type": "brooks_mfc",
+      "port": "COM26"
+    }
+  ],
+  "computed_rh": [],
+  "rh_control": {
+    "source": "",
+    "humid_mfc": "",
+    "dry_mfc": "",
+    "target": 50.0,
+    "total_flow": 2.0,
+    "kp": 1.0,
+    "ki": 0.03,
+    "kd": 0.0
+  }
+}
