@@ -268,12 +268,12 @@ class Worker(QThread):
         self.step_index += 1
         if self.step_index == len(self.steps):
             # set flows to 0 when experiment finishes
-            for device in self.devices.values():
+            for name, device in self.devices.items():
                 if "flow" in device.controls:
                     try:
                         device.set("flow", 0.0)
                     except Exception as error:
-                        self.message.emit(f"{device.name}: could not set the flow to 0 ({error})")
+                        self.message.emit(f"{name}: could not set the flow to 0 ({error})")
             self.stop_experiment("Experiment finished.")
             return
         step = self.steps[self.step_index]

@@ -38,15 +38,15 @@
   "computed_rh": [
     {
       "name": "Calibrated RH",
-      "temperature_from": "",
+      "temperature_from": "Chiller",
       "dewpoint_from": "Mirror",
       "calibrated": true
     }
   ],
   "rh_control": {
-    "source": "RH upstream rh",
-    "humid_mfc": "Humid MFC",
-    "dry_mfc": "Vögtlin MFC 3",
+    "source": "Calibrated RH",
+    "humid_mfc": "Wet",
+    "dry_mfc": "Dry",
     "target": 60.0,
     "total_flow": 2.0,
     "kp": 1.0,

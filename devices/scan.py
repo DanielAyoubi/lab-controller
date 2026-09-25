@@ -1,5 +1,3 @@
-from serial.tools import list_ports
-
 from devices import DEVICE_TYPES
 
 # A Modbus reply arrives within milliseconds, so silent addresses can be skipped quickly.
@@ -7,13 +5,12 @@ from devices import DEVICE_TYPES
 MODBUS_TIMEOUT = 0.15
 
 
-def scan(deep, known_addresses, on_progress):
-    """Look for known devices on every serial port.
+def scan(ports, deep, known_addresses, on_progress):
+    """Look for known devices on each of `ports`.
     A quick scan tries each type's default address plus `known_addresses`. A deep scan also
     sweeps Modbus addresses 1-247. `on_progress(port_number, text)` returns False to cancel.
     Returns a list of device dicts without names.
     """
-    ports = [port.device for port in list_ports.comports()]
     found = []
     for port_number, port in enumerate(ports):
         port_has_device = False

@@ -1,10 +1,10 @@
 import copy
 import os
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QThread, Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
-    QApplication, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout,
+    QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFileDialog, QFormLayout,
     QHBoxLayout, QHeaderView, QInputDialog, QLabel, QLineEdit, QMessageBox, QProgressDialog,
     QPushButton, QSpinBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
@@ -28,6 +28,31 @@ def logo_widget(ratio):
     return logo
 
 
+class ScanWorker(QThread):
+    progress = pyqtSignal(int, str)
+    done = pyqtSignal(list, bool)  # found devices, cancelled
+
+    def __init__(self, ports, deep, known_addresses):
+        super().__init__()
+        self.ports = ports
+        self.deep = deep
+        self.known_addresses = known_addresses
+        self.cancelled = False
+
+    def run(self):
+        found = scan(self.ports, self.deep, self.known_addresses, self.on_progress)
+        self.done.emit(found, self.cancelled)
+
+    def on_progress(self, port_number, text):
+        if self.cancelled:
+            return False
+        self.progress.emit(port_number, text)
+        return True
+
+    def cancel(self):
+        self.cancelled = True
+
+
 class DevicesDialog(QDialog):
     def __init__(self, setup, parent=None):
         super().__init__(parent)
@@ -35,6 +60,8 @@ class DevicesDialog(QDialog):
         self.resize(900, 800)
         self.setup = copy.deepcopy(setup)
         self.ports = [port.device for port in list_ports.comports()]
+        self.scan_worker = None
+        self.scan_progress = None
 
         # One column per connection setting used by any device type, so a new driver
         # with a new setting shows up here without changing this dialog.
@@ -56,15 +83,15 @@ class DevicesDialog(QDialog):
         add_button.clicked.connect(self.add_new_device)
         remove_button = QPushButton("Remove selected")
         remove_button.clicked.connect(self.remove_device)
-        detect_button = QPushButton("Detect devices…")
-        detect_button.clicked.connect(self.detect_devices)
+        self.detect_button = QPushButton("Detect devices…")
+        self.detect_button.clicked.connect(self.detect_devices)
         table_buttons = QHBoxLayout()
         table_buttons.addWidget(QLabel("Device catalog:"))
         table_buttons.addWidget(self.new_type)
         table_buttons.addWidget(add_button)
         table_buttons.addWidget(remove_button)
         table_buttons.addStretch()
-        table_buttons.addWidget(detect_button)
+        table_buttons.addWidget(self.detect_button)
 
         # One row per RH worked out from a temperature and a dew point with the Magnus formula.
         self.rh_table = QTableWidget(0, 4)
@@ -99,6 +126,7 @@ class DevicesDialog(QDialog):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(self.save_and_close)
         buttons.rejected.connect(self.reject)
+        self.ok_button = buttons.button(QDialogButtonBox.StandardButton.Ok)
 
         layout = QVBoxLayout(self)
         logo = logo_widget(self.devicePixelRatioF())
@@ -243,45 +271,118 @@ class DevicesDialog(QDialog):
         if folder:
             self.log_folder.setText(folder)
 
+    def row_port_editor(self, row):
+        return self.table.cellWidget(row, self.setting_names.index("port") + 2)
+
     def detect_devices(self):
         choices = ["Quick: default and already used addresses", "Deep: all Modbus addresses (minutes per port)"]
         choice, ok = QInputDialog.getItem(self, "Detect devices", "Scan type:", choices, 0, False)
         if not ok:
             return
-        devices = self.devices_from_table()
-        known_addresses = [device["address"] for device in devices if "address" in device]
 
-        port_count = len(list_ports.comports())
-        progress = QProgressDialog("Scanning…", "Cancel", 0, port_count, self)
-        progress.setWindowTitle("Detect devices")
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setMinimumDuration(0)
-
-        def on_progress(port_number, text):
-            progress.setValue(port_number)
-            progress.setLabelText(text)
-            QApplication.processEvents()
-            return not progress.wasCanceled()
-
-        found = scan(choice.startswith("Deep"), known_addresses, on_progress)
-        progress.close()
-
-        added = 0
-        for device in found:
-            already_listed = False
-            for existing in devices:
-                if (existing["type"] == device["type"] and existing["port"] == device["port"]
-                        and existing.get("address") == device.get("address")):
-                    already_listed = True
-                    break
-            if already_listed:
+        # Ports come and go while the dialog is open; offer the new ones in every row too.
+        self.ports = [port.device for port in list_ports.comports()]
+        for row in range(self.table.rowCount()):
+            editor = self.row_port_editor(row)
+            if editor is None:
                 continue
+            for port in self.ports:
+                if editor.findText(port) < 0:
+                    editor.addItem(port)
+
+        known_addresses = [device["address"] for device in self.devices_from_table() if "address" in device]
+        self.scan_worker = ScanWorker(self.ports, choice.startswith("Deep"), known_addresses)
+        self.scan_progress = QProgressDialog("Scanning…", "Cancel", 0, len(self.ports), self)
+        self.scan_progress.setWindowTitle("Detect devices")
+        self.scan_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self.scan_progress.setMinimumDuration(0)
+        self.scan_progress.canceled.connect(self.cancel_scan)
+        self.scan_worker.progress.connect(self.scan_progressed)
+        self.scan_worker.done.connect(self.scan_finished)
+        self.detect_button.setEnabled(False)
+        self.ok_button.setEnabled(False)
+        self.scan_worker.start()
+
+    def scan_progressed(self, port_number, text):
+        # A progress signal already queued when Cancel was pressed would show the dialog again.
+        if self.scan_worker is None or self.scan_worker.cancelled:
+            return
+        self.scan_progress.setValue(port_number)
+        self.scan_progress.setLabelText(text)
+
+    def cancel_scan(self):
+        # The probe in progress still has to time out, which can take a few seconds.
+        self.scan_worker.cancel()
+        self.detect_button.setText("Stopping…")
+
+    def scan_finished(self, found, cancelled):
+        self.scan_worker.wait()
+        self.scan_worker = None
+        # Closing a QProgressDialog emits canceled, and there is no scan left to cancel.
+        self.scan_progress.canceled.disconnect(self.cancel_scan)
+        self.scan_progress.close()
+        self.scan_progress = None
+        self.detect_button.setText("Detect devices…")
+        self.detect_button.setEnabled(True)
+        self.ok_button.setEnabled(True)
+
+        devices = self.devices_from_table()  # in table row order
+        lines = []
+        for device in found:
+            description = DEVICE_TYPES[device["type"]].label
+            if "address" in device:
+                description += f", address {device['address']}"
+
+            already_listed = any(
+                existing["type"] == device["type"] and existing["port"] == device["port"]
+                and existing.get("address") == device.get("address") for existing in devices)
+            if already_listed:
+                lines.append(f"{device['port']}  {description}: already listed")
+                continue
+
+            # Windows can give a device a new COM number. A row of the same type and address
+            # whose port no longer exists (or was never filled in) is that device, as long as
+            # there is only one such row.
+            moved = [row for row, existing in enumerate(devices)
+                     if existing["type"] == device["type"]
+                     and existing.get("address") == device.get("address")
+                     and existing["port"] not in self.ports]
+            if len(moved) == 1:
+                row = moved[0]
+                old_port = devices[row]["port"]
+                self.row_port_editor(row).setCurrentText(device["port"])
+                devices[row]["port"] = device["port"]
+                if old_port:
+                    lines.append(f"{device['port']}  {description}: port updated (was {old_port})")
+                else:
+                    lines.append(f"{device['port']}  {description}: port filled in for {devices[row]['name']}")
+                continue
+
             name = f"{DEVICE_TYPES[device['type']].label} ({device['port']})"
             if "address" in device:
                 name = f"{DEVICE_TYPES[device['type']].label} ({device['port']}, {device['address']})"
             self.add_row({"name": name, **device})
-            added += 1
-        QMessageBox.information(self, "Detect devices", f"Found {len(found)} device(s), added {added} new.")
+            devices.append({"name": name, **device})
+            lines.append(f"{device['port']}  {description}: added")
+
+        if cancelled:
+            header = f"Scan cancelled. Found {len(found)} device(s) before stopping."
+        else:
+            header = f"Found {len(found)} device(s)."
+            found_ports = {device["port"] for device in found}
+            empty_ports = [port for port in self.ports if port not in found_ports]
+            if empty_ports:
+                lines.append(f"Nothing recognised on: {', '.join(empty_ports)}")
+        QMessageBox.information(self, "Detect devices", "\n".join([header, ""] + lines) if lines else header)
+
+    def reject(self):
+        # Never close with the scan thread still holding a serial port.
+        if self.scan_worker is not None:
+            self.scan_worker.done.disconnect()
+            self.scan_worker.cancel()
+            self.scan_worker.wait()
+            self.scan_worker = None
+        super().reject()
 
     def save_and_close(self):
         devices = self.devices_from_table()
