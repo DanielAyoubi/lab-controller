@@ -143,11 +143,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(devices_group)
 
         readings_group = QGroupBox("Latest readings")
-        readings_form = QFormLayout(readings_group)
+        readings_columns = QHBoxLayout(readings_group)
+        left_form = QFormLayout()
+        right_form = QFormLayout()
+        readings_columns.addLayout(left_form)
+        readings_columns.addLayout(right_form)
         self.value_labels = {}
-        for column in self.units:
+        columns = list(self.units)
+        split = (len(columns) + 1) // 2
+        for index, column in enumerate(columns):
             self.value_labels[column] = QLabel("–")
-            readings_form.addRow(column, self.value_labels[column])
+            form = left_form if index < split else right_form
+            form.addRow(column, self.value_labels[column])
         layout.addWidget(readings_group)
 
         self.control_group = QGroupBox("Manual control")
